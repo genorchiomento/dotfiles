@@ -36,9 +36,11 @@ cask "notion"           # notas e docs
 # ── Dev Tools ────────────────────────────────────────────
 cask "visual-studio-code"  # editor
 cask "intellij-idea"       # IntelliJ IDEA Ultimate
+cask "cursor"              # VS Code + AI integrada (muito popular em 2025)
 cask "warp"                # terminal moderno com AI
 cask "postman"             # teste de APIs
 cask "tableplus"           # GUI databases (Postgres, MySQL, SQLite)
+cask "docker"              # Docker Desktop (containers)
 
 # ── Mobile / React Native ────────────────────────────────
 cask "android-studio"   # Android SDK + emulador + build tools
