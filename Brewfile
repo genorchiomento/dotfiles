@@ -1,23 +1,50 @@
-# Brewfile — instala todos os pacotes via `brew bundle`
+# ============================================================
+# Brewfile — todos os pacotes e apps
 # Uso: brew bundle --file=Brewfile
+# ============================================================
 
 # Taps
 tap "xcodesorg/made"
 
-# === CLI Tools ===
+# ── CLI Tools ────────────────────────────────────────────
 brew "git"
 brew "bash"           # bash 5+ (necessário para SDKMAN)
-brew "aria2"          # download paralelo (acelera downloads)
-brew "watchman"       # file watcher (Metro bundler do Expo precisa)
+brew "aria2"          # download paralelo (acelera xcodes)
+brew "watchman"       # file watcher (Metro bundler Expo)
 brew "mas"            # Mac App Store CLI
+brew "trash"          # move para lixeira em vez de deletar
 
-# === Languages / Runtimes ===
-brew "node"           # Node.js LTS
+# ── Languages / Runtimes ────────────────────────────────
+brew "node"           # Node.js (LTS via brew, ou use fnm/nvm)
 
-# === Apps ===
-cask "android-studio"     # Android SDK + emulador
-cask "intellij-idea"      # IntelliJ IDEA Ultimate
-cask "visual-studio-code" # VS Code
+# ── Browsers ────────────────────────────────────────────
+cask "arc"              # browser moderno (dev-first)
+cask "google-chrome"    # chrome
+cask "firefox"          # firefox
 
-# Xcode: instalar manualmente via App Store (ID 497799835)
-# Não disponível via brew cask — tamanho ~8GB
+# ── Comunicação ─────────────────────────────────────────
+cask "slack"            # times
+cask "discord"          # comunidades
+
+# ── AI / Claude ─────────────────────────────────────────
+cask "claude"           # Claude desktop app (Anthropic)
+
+# ── Produtividade ────────────────────────────────────────
+cask "raycast"          # launcher / spotlight turbinado
+cask "notion"           # notas e docs
+
+# ── Dev Tools ────────────────────────────────────────────
+cask "visual-studio-code"  # editor
+cask "intellij-idea"       # IntelliJ IDEA Ultimate
+cask "warp"                # terminal moderno com AI
+cask "postman"             # teste de APIs
+cask "tableplus"           # GUI databases (Postgres, MySQL, SQLite)
+
+# ── Mobile / React Native ────────────────────────────────
+cask "android-studio"   # Android SDK + emulador + build tools
+
+# ── Xcode ────────────────────────────────────────────────
+# NÃO disponível via brew — instalar pelo App Store:
+#   mas install 497799835
+# Depois: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+#          sudo xcodebuild -license accept
