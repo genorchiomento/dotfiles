@@ -39,7 +39,7 @@ cask "intellij-idea"       # IntelliJ IDEA Ultimate
 cask "cursor"              # VS Code + AI integrada (muito popular em 2025)
 cask "warp"                # terminal moderno com AI
 cask "postman"             # teste de APIs
-cask "tableplus"           # GUI databases (Postgres, MySQL, SQLite)
+cask "dbeaver-community"   # GUI databases free/open-source (Postgres, MySQL, SQLite, e mais)
 cask "docker"              # Docker Desktop (containers)
 
 # ── Mobile / React Native ────────────────────────────────

@@ -101,7 +101,15 @@ else
   warn "  3. sudo xcodebuild -license accept"
 fi
 
-# ── 8. Android SDK ───────────────────────────────────────
+# ── 8. DBeaver Community ─────────────────────────────────
+log "DBeaver Community"
+if [[ -d "/Applications/DBeaver.app" ]]; then
+  ok "DBeaver Community instalado"
+else
+  warn "DBeaver não encontrado (deveria ter sido instalado pelo Brewfile)"
+fi
+
+# ── 9. Android SDK ───────────────────────────────────────
 log "Android Studio"
 if [[ -d "/Applications/Android Studio.app" ]]; then
   ok "Android Studio instalado"
@@ -110,7 +118,7 @@ else
   warn "Android Studio não encontrado (deveria ter sido instalado pelo Brewfile)"
 fi
 
-# ── 9. Resumo final ──────────────────────────────────────
+# ── 10. Resumo final ─────────────────────────────────────
 divider
 echo ""
 echo -e "${BOLD}${GREEN}  Setup concluído! 🎉${NC}"
