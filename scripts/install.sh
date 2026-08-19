@@ -162,102 +162,177 @@ toggle_cat() { # marca tudo se não estiver tudo marcado; senão desmarca
 # padding correto com acentos (printf %-Ns conta bytes, ${#s} conta chars)
 pad() { local s="$1" w="$2"; while [ ${#s} -lt "$w" ]; do s="$s "; done; printf '%s' "$s"; }
 
-# ── Menu ───────────────────────────────────────────────────
-render_menu() {
-  clear; banner
-  echo -e "  ${BOLD}O que você quer instalar?${NC}\n"
-  local i=0 mark
-  while [ $i -lt ${#CAT_NAME[@]} ]; do
-    count_cat $i
-    if   [ "$CNT_SEL" -eq 0 ];         then mark=" "
-    elif [ "$CNT_SEL" -eq "$CNT_TOT" ]; then mark="x"
-    else                                    mark="~"; fi
-    echo -e "  ${BOLD}[$mark]${NC} $(pad "$(( i + 1 ))." 4)$(pad "${CAT_NAME[$i]}" 24)${DIM}($CNT_SEL/$CNT_TOT)${NC}"
-    i=$(( i + 1 ))
-  done
-  echo ""
-  echo -e "  ${DIM}número${NC} alterna    ${DIM}e<número>${NC} expande categoria"
-  echo -e "  ${DIM}a${NC} marca tudo     ${DIM}n${NC} desmarca tudo"
-  echo -e "  ${DIM}ENTER${NC} instalar    ${DIM}q${NC} sair"
-  echo ""
-}
+# ── TUI: navegação por setas ───────────────────────────────
+# Sem dependências externas (fzf/gum/dialog): o script roda numa máquina
+# zerada, antes de qualquer coisa estar instalada. Tudo em bash 3.2.
 
-render_cat() { # render_cat <cat_idx>
-  clear; banner
-  echo -e "  ${BOLD}${CAT_NAME[$1]}${NC}\n"
-  local i=0 n=0 mark
-  while [ $i -lt ${#ITEM_ID[@]} ]; do
-    if [ "${ITEM_CAT[$i]}" -eq "$1" ]; then
-      n=$(( n + 1 ))
-      [ "${ITEM_SEL[$i]}" -eq 1 ] && mark="x" || mark=" "
-      echo -e "  ${BOLD}[$mark]${NC} $(pad "$n." 4)$(pad "${ITEM_ID[$i]}" 24)${DIM}${ITEM_DESC[$i]}${NC}"
+CAT_OPEN=()                       # 1 = categoria expandida
+ROW_TYPE=(); ROW_CAT=(); ROW_ITEM=()   # linhas visíveis (achatadas)
+CUR=0; VP=0                       # cursor e topo do viewport
+KEYBUF=""                         # pushback de teclas
+
+init_open() { local c=0; while [ $c -lt ${#CAT_NAME[@]} ]; do CAT_OPEN[$c]=0; c=$(( c + 1 )); done; }
+
+build_rows() {
+  ROW_TYPE=(); ROW_CAT=(); ROW_ITEM=()
+  local c=0 i
+  while [ $c -lt ${#CAT_NAME[@]} ]; do
+    ROW_TYPE+=("c"); ROW_CAT+=("$c"); ROW_ITEM+=("-1")
+    if [ "${CAT_OPEN[$c]}" -eq 1 ]; then
+      i=0
+      while [ $i -lt ${#ITEM_ID[@]} ]; do
+        if [ "${ITEM_CAT[$i]}" -eq "$c" ]; then
+          ROW_TYPE+=("i"); ROW_CAT+=("$c"); ROW_ITEM+=("$i")
+        fi
+        i=$(( i + 1 ))
+      done
     fi
-    i=$(( i + 1 ))
+    c=$(( c + 1 ))
   done
-  echo ""
-  echo -e "  ${DIM}número${NC} alterna   ${DIM}a${NC} tudo   ${DIM}n${NC} nada   ${DIM}ENTER/b${NC} voltar"
-  echo ""
 }
 
-nth_item_in_cat() { # nth_item_in_cat <cat_idx> <n> -> ecoa índice global ou -1
+row_of_cat() { # primeira linha da categoria $1
+  local r=0
+  while [ $r -lt ${#ROW_TYPE[@]} ]; do
+    [ "${ROW_TYPE[$r]}" = "c" ] && [ "${ROW_CAT[$r]}" -eq "$1" ] && { echo "$r"; return; }
+    r=$(( r + 1 ))
+  done
+  echo 0
+}
+
+# ── Leitura de teclas ──────────────────────────────────────
+# bash 3.2 não tem `read -t` fracionário, então não dá pra distinguir ESC
+# solto de uma sequência de seta por timeout. Em vez disso: lê o próximo
+# byte e, se não for '[' nem 'O', devolve pro buffer (pushback).
+_getch() {
+  if [ -n "$KEYBUF" ]; then CH="${KEYBUF:0:1}"; KEYBUF="${KEYBUF:1}"; return 0; fi
+  IFS= read -rsn1 CH
+}
+
+read_key() {
+  _getch || { echo eof; return; }
+  case "$CH" in
+    '')   echo enter ;;
+    ' ')  echo space ;;
+    $'\e')
+      _getch || { echo esc; return; }
+      case "$CH" in
+        '['|'O')
+          _getch || { echo esc; return; }
+          case "$CH" in
+            A) echo up ;; B) echo down ;; C) echo right ;; D) echo left ;;
+            *) echo other ;;
+          esac ;;
+        *) KEYBUF="$CH$KEYBUF"; echo esc ;;
+      esac ;;
+    k|K) echo up    ;; j|J) echo down  ;;
+    l|L) echo right ;; h|H) echo left  ;;
+    a|A) echo all   ;; n|N) echo none  ;;
+    q|Q) echo quit  ;;
+    *)   echo other ;;
+  esac
+}
+
+# ── Render ─────────────────────────────────────────────────
+total_selected() {
   local i=0 n=0
-  while [ $i -lt ${#ITEM_ID[@]} ]; do
-    if [ "${ITEM_CAT[$i]}" -eq "$1" ]; then
-      n=$(( n + 1 ))
-      [ "$n" -eq "$2" ] && { echo "$i"; return; }
-    fi
-    i=$(( i + 1 ))
-  done
-  echo "-1"
+  while [ $i -lt ${#ITEM_SEL[@]} ]; do [ "${ITEM_SEL[$i]}" -eq 1 ] && n=$(( n + 1 )); i=$(( i + 1 )); done
+  echo "$n"
 }
 
-cat_submenu() { # cat_submenu <cat_idx>
-  local input tok idx
-  while true; do
-    render_cat "$1"
-    read -r -p "  > " input
-    [ -z "$input" ] && return
-    for tok in $input; do
-      case "$tok" in
-        b|B|q|Q) return ;;
-        a|A) set_cat "$1" 1 ;;
-        n|N) set_cat "$1" 0 ;;
-        ''|*[!0-9]*) ;;
-        *)
-          idx="$(nth_item_in_cat "$1" "$tok")"
-          if [ "$idx" -ge 0 ]; then
-            [ "${ITEM_SEL[$idx]}" -eq 1 ] && ITEM_SEL[$idx]=0 || ITEM_SEL[$idx]=1
-          fi
-          ;;
-      esac
-    done
+tui_render() {
+  local h=24 w=80
+  command -v tput >/dev/null 2>&1 && { h=$(tput lines 2>/dev/null || echo 24); w=$(tput cols 2>/dev/null || echo 80); }
+  local avail=$(( h - 13 )); [ "$avail" -lt 4 ] && avail=4
+  local nrows=${#ROW_TYPE[@]}
+
+  [ "$CUR" -lt 0 ] && CUR=0
+  [ "$CUR" -ge "$nrows" ] && CUR=$(( nrows - 1 ))
+  [ "$CUR" -lt "$VP" ] && VP="$CUR"
+  [ "$CUR" -ge $(( VP + avail )) ] && VP=$(( CUR - avail + 1 ))
+  [ "$VP" -lt 0 ] && VP=0
+
+  printf '\033[H'
+  printf '%b\n' "\033[K"
+  printf '%b\n' "${BOLD}  ╔══════════════════════════════════════════════╗${NC}\033[K"
+  printf '%b\n' "${BOLD}  ║          dotfiles — setup automático         ║${NC}\033[K"
+  printf '%b\n' "${BOLD}  ╚══════════════════════════════════════════════╝${NC}\033[K"
+  printf '%b\n' "\033[K"
+  printf '%b\n' "  ${BOLD}O que instalar?${NC}  ${DIM}$(total_selected) de ${#ITEM_ID[@]} itens marcados${NC}\033[K"
+  printf '%b\n' "\033[K"
+
+  if [ "$VP" -gt 0 ]; then printf '%b\n' "      ${DIM}▲ mais acima${NC}\033[K"; else printf '%b\n' "\033[K"; fi
+
+  local r="$VP" last=$(( VP + avail )) mark arrow cur line desc maxdesc
+  [ "$last" -gt "$nrows" ] && last="$nrows"
+  while [ "$r" -lt "$last" ]; do
+    [ "$r" -eq "$CUR" ] && cur="${BOLD}${CYAN}❯${NC}" || cur=" "
+    if [ "${ROW_TYPE[$r]}" = "c" ]; then
+      count_cat "${ROW_CAT[$r]}"
+      if   [ "$CNT_SEL" -eq 0 ];          then mark="${DIM}[ ]${NC}"
+      elif [ "$CNT_SEL" -eq "$CNT_TOT" ]; then mark="${GREEN}[x]${NC}"
+      else                                     mark="${YELLOW}[~]${NC}"; fi
+      [ "${CAT_OPEN[${ROW_CAT[$r]}]}" -eq 1 ] && arrow="▾" || arrow="▸"
+      line="  $cur $mark $arrow $(pad "${CAT_NAME[${ROW_CAT[$r]}]}" 26)${DIM}$CNT_SEL/$CNT_TOT${NC}"
+    else
+      local it="${ROW_ITEM[$r]}"
+      [ "${ITEM_SEL[$it]}" -eq 1 ] && mark="${GREEN}[x]${NC}" || mark="${DIM}[ ]${NC}"
+      maxdesc=$(( w - 44 )); [ "$maxdesc" -lt 10 ] && maxdesc=10
+      desc="${ITEM_DESC[$it]}"
+      [ ${#desc} -gt "$maxdesc" ] && desc="${desc:0:$(( maxdesc - 1 ))}…"
+      line="  $cur     $mark $(pad "${ITEM_ID[$it]}" 24)${DIM}$desc${NC}"
+    fi
+    printf '%b\n' "$line\033[K"
+    r=$(( r + 1 ))
   done
+
+  local blank=$(( avail - ( last - VP ) ))
+  while [ "$blank" -gt 0 ]; do printf '%b\n' "\033[K"; blank=$(( blank - 1 )); done
+
+  if [ "$last" -lt "$nrows" ]; then printf '%b\n' "      ${DIM}▼ mais abaixo${NC}\033[K"; else printf '%b\n' "\033[K"; fi
+
+  printf '%b\n' "\033[K"
+  printf '%b\n' "  ${DIM}↑↓${NC} mover   ${DIM}→${NC} abrir   ${DIM}←${NC} fechar   ${DIM}espaço${NC} marcar\033[K"
+  printf '%b\n' "  ${DIM}a${NC} tudo    ${DIM}n${NC} nada    ${DIM}ENTER${NC} instalar   ${DIM}q${NC} sair\033[K"
+  printf '\033[J'
 }
+
+# ── Loop principal ─────────────────────────────────────────
+tui_cleanup() { command -v tput >/dev/null 2>&1 && tput cnorm 2>/dev/null; printf '\033[?25h'; }
 
 main_menu() {
-  local input tok
+  init_open; build_rows
+  trap 'tui_cleanup; echo; exit 130' INT
+  command -v tput >/dev/null 2>&1 && tput civis 2>/dev/null
+  printf '\033[2J'
+
+  local key c it
   while true; do
-    render_menu
-    read -r -p "  > " input
-    case "$input" in
-      "")   return 0 ;;
-      q|Q)  echo -e "\n  Cancelado.\n"; exit 0 ;;
+    tui_render
+    key="$(read_key)"
+    c="${ROW_CAT[$CUR]}"; it="${ROW_ITEM[$CUR]}"
+    case "$key" in
+      up)    CUR=$(( CUR - 1 )); [ "$CUR" -lt 0 ] && CUR=0 ;;
+      down)  CUR=$(( CUR + 1 )); [ "$CUR" -ge ${#ROW_TYPE[@]} ] && CUR=$(( ${#ROW_TYPE[@]} - 1 )) ;;
+      right)
+        if [ "${ROW_TYPE[$CUR]}" = "c" ]; then
+          if [ "${CAT_OPEN[$c]}" -eq 0 ]; then CAT_OPEN[$c]=1; build_rows
+          else CUR=$(( CUR + 1 )); [ "$CUR" -ge ${#ROW_TYPE[@]} ] && CUR=$(( ${#ROW_TYPE[@]} - 1 )); fi
+        fi ;;
+      left)
+        if [ "${ROW_TYPE[$CUR]}" = "c" ] && [ "${CAT_OPEN[$c]}" -eq 1 ]; then
+          CAT_OPEN[$c]=0; build_rows
+        elif [ "${ROW_TYPE[$CUR]}" = "i" ]; then
+          CAT_OPEN[$c]=0; build_rows; CUR="$(row_of_cat "$c")"
+        fi ;;
+      space)
+        if [ "${ROW_TYPE[$CUR]}" = "c" ]; then toggle_cat "$c"
+        else [ "${ITEM_SEL[$it]}" -eq 1 ] && ITEM_SEL[$it]=0 || ITEM_SEL[$it]=1; fi ;;
+      all)   set_all 1 ;;
+      none)  set_all 0 ;;
+      enter) tui_cleanup; trap - INT; printf '\033[2J\033[H'; return 0 ;;
+      quit|eof) tui_cleanup; trap - INT; printf '\033[2J\033[H'; echo -e "\n  Cancelado.\n"; exit 0 ;;
     esac
-    for tok in $input; do
-      case "$tok" in
-        a|A) set_all 1 ;;
-        n|N) set_all 0 ;;
-        e*|E*)
-          tok="${tok#[eE]}"
-          case "$tok" in ''|*[!0-9]*) continue ;; esac
-          [ "$tok" -ge 1 ] && [ "$tok" -le ${#CAT_NAME[@]} ] && cat_submenu $(( tok - 1 ))
-          ;;
-        ''|*[!0-9]*) ;;
-        *)
-          [ "$tok" -ge 1 ] && [ "$tok" -le ${#CAT_NAME[@]} ] && toggle_cat $(( tok - 1 ))
-          ;;
-      esac
-    done
   done
 }
 

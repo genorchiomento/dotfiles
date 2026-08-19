@@ -22,23 +22,33 @@ source ~/.zshrc
 
 ### Escolhendo o que instalar
 
-O script abre um menu por categoria:
+O script abre uma lista navegável por setas:
 
 ```
-  [x] 1.  CLI Tools               (6/6)
-  [x] 2.  Languages / Runtimes    (1/1)
-  [ ] 3.  Browsers                (0/3)
-  [~] 7.  Dev Tools               (5/7)
-  ...
+    [x] ▸ CLI Tools                 6/6
+    [x] ▸ Languages / Runtimes      1/1
+    [ ] ▸ Browsers                  0/3
+  ❯ [~] ▾ Dev Tools                 5/7
+        [x] visual-studio-code      editor
+        [ ] intellij-idea           IntelliJ IDEA Ultimate
+        [x] cursor                  VS Code + AI integrada (muito popul…
+      ▼ mais abaixo
 
-  número alterna    e<número> expande categoria
-  a marca tudo      n desmarca tudo
-  ENTER instalar    q sair
+  ↑↓ mover   → abrir   ← fechar   espaço marcar
+  a tudo    n nada    ENTER instalar   q sair
 ```
 
-- **número** — marca/desmarca a categoria inteira (`n 3 7` = desmarca tudo, marca Browsers e Dev Tools)
-- **`e7`** — expande a categoria 7 pra escolher app por app; `[~]` indica seleção parcial
-- **ENTER** — instala o que estiver marcado
+| Tecla | Ação |
+|---|---|
+| `↑` `↓` | mover o cursor (`k`/`j` também) |
+| `→` | abrir a categoria; se já aberta, desce pro primeiro app |
+| `←` | fechar a categoria (de dentro dela, volta pro topo) |
+| `espaço` | marcar/desmarcar — na categoria vale pra todos os apps dela |
+| `a` / `n` | marcar tudo / desmarcar tudo |
+| `ENTER` | instalar o que estiver marcado |
+| `q` | sair sem instalar |
+
+`[~]` = seleção parcial. `▸`/`▾` = categoria fechada/aberta. A lista rola sozinha se não couber na tela.
 
 ### Modo não-interativo
 

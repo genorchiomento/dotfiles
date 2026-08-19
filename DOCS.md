@@ -433,7 +433,7 @@ echo 'cask "nome-do-app"' >> ~/Projects/dotfiles/Brewfile
 
 Script que configura o ambiente. Dois princípios de design:
 
-1. **Seleção** — você escolhe o que instalar (menu por categoria, com drill-down por app).
+1. **Seleção** — você escolhe o que instalar numa lista navegável por setas, categoria a categoria ou app a app.
 2. **Nunca aborta** — se um app falhar, o script continua, configura todo o resto, e lista as falhas juntas no resumo final.
 
 ### Modos de uso
@@ -450,26 +450,74 @@ bash scripts/install.sh --help
 `--only` casa por número da categoria **ou** por parte do nome (case-insensitive).
 `--dry-run` combina com qualquer modo.
 
-### O menu
-```
-  [x] 1.  CLI Tools               (6/6)
-  [x] 2.  Languages / Runtimes    (1/1)
-  [ ] 3.  Browsers                (0/3)
-  [~] 7.  Dev Tools               (5/7)
+### O menu — TUI navegável por setas
 
-  número alterna    e<número> expande categoria
-  a marca tudo      n desmarca tudo
-  ENTER instalar    q sair
+```
+    [x] ▸ CLI Tools                 6/6
+    [x] ▸ Languages / Runtimes      1/1
+    [ ] ▸ Browsers                  0/3
+  ❯ [~] ▾ Dev Tools                 5/7
+        [x] visual-studio-code      editor
+        [ ] intellij-idea           IntelliJ IDEA Ultimate
+      ▼ mais abaixo
+
+  ↑↓ mover   → abrir   ← fechar   espaço marcar
+  a tudo    n nada    ENTER instalar   q sair
 ```
 
 | Marca | Significado |
 |---|---|
-| `[x]` | categoria inteira selecionada |
+| `[x]` | tudo selecionado |
 | `[ ]` | nada selecionado |
-| `[~]` | seleção parcial (drill-down) |
+| `[~]` | seleção parcial |
+| `▸` / `▾` | categoria fechada / aberta |
 
-`e7` entra na categoria 7 e mostra app por app. Dentro dela: número alterna, `a`/`n` marcam tudo/nada, `ENTER` ou `b` volta.
-Aceita múltiplos tokens numa linha: `n 3 7` desmarca tudo, depois marca Browsers e Dev Tools.
+| Tecla | Ação |
+|---|---|
+| `↑` `↓` / `k` `j` | mover o cursor |
+| `→` / `l` | abrir a categoria; se já aberta, desce pro primeiro app |
+| `←` / `h` | fechar a categoria; de dentro dela, fecha e volta pro cabeçalho |
+| `espaço` | alterna — na linha de categoria vale pra todos os apps dela |
+| `a` / `n` | marcar tudo / desmarcar tudo |
+| `ENTER` | instalar |
+| `q` | sair |
+
+**Sem dependências externas.** Nada de `fzf`, `gum` ou `dialog`: o script roda numa máquina zerada, antes de qualquer coisa estar instalada. Tudo é bash 3.2 + ANSI.
+
+### Como a TUI funciona
+
+**Modelo de linhas achatado.** Categorias e apps não são telas separadas — são uma lista só, reconstruída sempre que uma categoria abre ou fecha:
+
+```bash
+CAT_OPEN=()                            # 1 = categoria expandida
+ROW_TYPE=(); ROW_CAT=(); ROW_ITEM=()   # linhas visíveis
+CUR=0; VP=0                            # cursor e topo do viewport
+```
+
+`build_rows()` percorre as categorias e, para cada uma aberta, insere as linhas dos apps logo abaixo. `CUR` é índice em `ROW_*`, então mover o cursor é aritmética simples — não precisa saber se está numa categoria ou num app até a hora de agir.
+
+**Leitura de teclas e o problema do ESC.** Uma seta chega como 3 bytes: `ESC` `[` `A`. Um ESC solto chega como 1 byte. TUIs normalmente distinguem os dois com um timeout de milissegundos — mas o bash 3.2 do macOS não aceita `read -t` fracionário:
+
+```
+$ /bin/bash -c 'read -t 0.05 x'
+read: 0.05: invalid timeout specification
+```
+
+Solução: em vez de esperar, lê o próximo byte e devolve pro buffer se não fizer parte de uma sequência de seta.
+
+```bash
+KEYBUF=""
+_getch() {
+  if [ -n "$KEYBUF" ]; then CH="${KEYBUF:0:1}"; KEYBUF="${KEYBUF:1}"; return 0; fi
+  IFS= read -rsn1 CH
+}
+```
+
+`IFS=` é obrigatório — sem isso o `read -n1` engole o espaço, que é justamente a tecla de marcar. No `case`, `''` é ENTER (com `-n1` o delimitador newline retorna string vazia).
+
+**Render sem flicker.** Não usa `clear` a cada frame — isso pisca. Em vez disso volta o cursor pro topo (`\033[H`), reescreve cada linha terminando com `\033[K` (limpa até o fim da linha) e no final `\033[J` (limpa o resto da tela). O cursor fica escondido durante a navegação (`tput civis`) e um `trap ... INT` garante que ele volta se você der Ctrl+C.
+
+**Viewport.** `avail = $(tput lines) - 13` (cabeçalho + rodapé). O topo da janela (`VP`) é ajustado a cada render pra conter o cursor, e as setas `▲`/`▼` aparecem quando há conteúdo fora da tela. Recalculado a cada frame, então redimensionar o terminal funciona.
 
 ### Catálogo — Brewfile é a fonte da verdade
 
