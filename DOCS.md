@@ -581,6 +581,47 @@ NOTE_MSG=()                 # próximos passos manuais
 
 `last_error_line()` filtra a saída do comando por `error|fatal|denied|not found|failed` e pega a última linha — é isso que aparece no resumo, em vez de despejar 200 linhas de log.
 
+### sudo: pedir uma vez, com contexto
+
+Casks com artefato `binary` criam symlinks em `/usr/local/bin`. Em Apple Silicon o brew mora em `/opt/homebrew` (do usuário), mas `/usr/local` continua do root:
+
+```
+drwxr-xr-x  7 root  wheel  /usr/local
+drwxr-xr-x@ 12 root wheel  /usr/local/bin
+```
+
+O Docker sozinho cria 6 symlinks lá (`docker`, `docker-compose`, `kubectl.docker`, os três `docker-credential-*`). Daí o sudo.
+
+O problema não era o sudo em si, era **quando** ele aparecia. O `capture()` roda o comando dentro de `$(...)`, engolindo stdout e stderr — então toda explicação do brew some. O prompt do sudo sobrevive porque o sudo escreve em `/dev/tty`, que escapa da substituição de comando:
+
+```
+$ script -q /dev/null bash -c 'out="$( { echo PROMPT > /dev/tty; } 2>&1; echo normal )"; echo "LAST_OUT=[$out]"'
+PROMPT
+LAST_OUT=[normal]
+```
+
+Resultado prático: um `Password:` pelado no meio da instalação, sem dizer quem pediu. E como o timestamp do sudo expira em 5 minutos, ele repergunta em instalações longas.
+
+`sudo_prewarm()` resolve pedindo uma vez no início, com explicação, e só quando faz sentido:
+
+```bash
+needs_sudo() {   # só se a seleção tiver algum cask ou o passo do Xcode
+  ...
+}
+```
+
+Depois um keepalive em background renova o timestamp enquanto o script roda:
+
+```bash
+( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
+SUDO_PID=$!
+disown 2>/dev/null || true   # senão o shell imprime "Terminated: 15" ao matar
+```
+
+`$$` dentro do subshell continua sendo o PID do script (não do subshell), então o keepalive morre junto com ele. Um `trap 'sudo_stop' EXIT` garante a limpeza — e o `trap` não altera o exit code do script.
+
+Recusar a senha não aborta nada: vira um aviso no resumo e o script segue com o que não precisa de root.
+
 ### Idempotência
 
 Todo item checa antes de instalar:

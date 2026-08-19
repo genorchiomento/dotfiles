@@ -60,6 +60,22 @@ bash scripts/install.sh --list                 # lista as categorias
 bash scripts/install.sh --help
 ```
 
+### Sobre a senha do macOS
+
+Se a seleção incluir apps `cask` ou o Xcode, o script pede sua senha **uma vez, logo no começo**, explicando por quê:
+
+```
+▶ Permissão de administrador
+  Alguns apps (Docker e outros) criam symlinks em /usr/local/bin,
+  que pertence ao root. O Xcode também precisa.
+  Digite sua senha do macOS uma vez agora — assim a instalação não
+  para no meio pedindo senha sem contexto.
+```
+
+O motivo: em Apple Silicon o Homebrew mora em `/opt/homebrew` (teu), mas `/usr/local` continua `root:wheel` — e casks com artefato `binary` (Docker, por exemplo) criam symlinks lá. Sem pedir antes, o `sudo` dispararia no meio da instalação como um `Password:` pelado, sem dizer quem pediu.
+
+Se você recusar, o script **não aborta**: segue instalando o que não precisa de root, e o que precisar entra no resumo como falha. Selecionando só apps que não usam `cask`, ele nem pergunta.
+
 ### Se algum app falhar
 
 O script **não para**. Ele instala e configura tudo que der certo, e mostra as falhas juntas no final:

@@ -345,7 +345,8 @@ apply_only() { # apply_only "dev,browsers" — número ou parte do nome (case-in
     [ -z "$spec" ] && continue
     found=0; i=0
     while [ $i -lt ${#CAT_NAME[@]} ]; do
-      lname="$(printf '%s' "${CAT_NAME[$i]}" | tr '[:upper:]' '[:lower:]')"
+      # tira espaço dos dois lados, senão --only="dev tools" nunca casa com "Dev Tools"
+      lname="$(printf '%s' "${CAT_NAME[$i]}" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
       case "$spec" in
         ''|*[!0-9]*)
           case "$lname" in *"$spec"*) set_cat $i 1; found=1 ;; esac ;;
@@ -488,6 +489,61 @@ step_xcode() {
   OK_COUNT=$(( OK_COUNT + 1 ))
 }
 
+# ── sudo: pedir uma vez, com contexto ──────────────────────
+# Casks com artefato `binary` criam symlinks em /usr/local/bin, que é
+# root:wheel no Apple Silicon (o brew mora em /opt/homebrew). Sem isso o
+# sudo dispara no meio da instalação: o prompt escapa do $(...) da
+# capture() via /dev/tty e aparece como um "Password:" pelado, sem dizer
+# quem pediu. E o timestamp do sudo expira em 5 min, então ele repergunta.
+SUDO_PID=""
+
+needs_sudo() {
+  local i=0
+  while [ $i -lt ${#ITEM_ID[@]} ]; do
+    if [ "${ITEM_SEL[$i]}" -eq 1 ]; then
+      [ "${ITEM_TYPE[$i]}" = "cask" ] && return 0
+      [ "${ITEM_ID[$i]}" = "xcode" ]  && return 0
+    fi
+    i=$(( i + 1 ))
+  done
+  return 1
+}
+
+sudo_keepalive() {
+  # $$ dentro do subshell continua sendo o PID do script, não do subshell
+  ( while kill -0 "$$" 2>/dev/null; do sudo -n true 2>/dev/null; sleep 50; done ) &
+  SUDO_PID=$!
+  disown 2>/dev/null || true   # senão o shell imprime "Terminated: 15" ao matar
+}
+
+sudo_stop() { [ -n "$SUDO_PID" ] && kill "$SUDO_PID" 2>/dev/null; SUDO_PID=""; }
+
+sudo_prewarm() {
+  [ "$DRY_RUN" -eq 1 ] && return 0
+  needs_sudo || return 0
+
+  log "Permissão de administrador"
+  if sudo -n true 2>/dev/null; then
+    ok "sudo já autorizado nesta sessão"
+    sudo_keepalive
+    return 0
+  fi
+
+  echo "  Alguns apps (Docker e outros) criam symlinks em /usr/local/bin,"
+  echo "  que pertence ao root. O Xcode também precisa."
+  echo "  Digite sua senha do macOS uma vez agora — assim a instalação não"
+  echo "  para no meio pedindo senha sem contexto."
+  echo ""
+  # sem capture(): o prompt do sudo precisa chegar no terminal
+  if sudo -v; then
+    ok "autorizado"
+    sudo_keepalive
+    return 0
+  fi
+  WARN_MSG+=("sudo não autorizado — apps que precisam de root podem falhar ou pedir senha no meio")
+  return 1
+}
+
 ensure_homebrew() {
   log "Homebrew"
   if command -v brew >/dev/null 2>&1; then ok "$(brew --version | head -1)"; return 0; fi
@@ -525,6 +581,9 @@ run_install() {
   echo -e "  ${DIM}Log completo: $LOG${NC}"
   [ "$DRY_RUN" -eq 1 ] && echo -e "  ${YELLOW}MODO DRY-RUN — nada será instalado${NC}"
   echo "dotfiles install — $(date)" > "$LOG"
+
+  trap 'sudo_stop' EXIT
+  sudo_prewarm
 
   # brew só é necessário se houver item brew/cask selecionado
   i=0

@@ -40,7 +40,7 @@ cask "cursor"              # VS Code + AI integrada (muito popular em 2025)
 cask "warp"                # terminal moderno com AI
 cask "postman"             # teste de APIs
 cask "dbeaver-community"   # GUI databases free/open-source (Postgres, MySQL, SQLite, e mais)
-cask "docker"              # Docker Desktop (containers)
+cask "docker-desktop"      # Docker Desktop (containers) — "docker" é old_token, evite
 
 # ── Mobile / React Native ────────────────────────────────
 cask "android-studio"   # Android SDK + emulador + build tools
