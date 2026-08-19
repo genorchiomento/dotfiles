@@ -12,7 +12,7 @@ dotfiles/
 ├── DOCS.md               → este arquivo (documentação de manutenção)
 ├── README.md             → visão geral e referência rápida
 ├── scripts/
-│   └── install.sh        → script de bootstrap (roda tudo do zero)
+│   └── install.sh        → bootstrap com menu de seleção + coleta de erros
 └── zsh/
     ├── .zshrc            → entry point do shell (symlinked para ~/.zshrc)
     ├── exports.zsh       → variáveis de ambiente (PATH, ANDROID_HOME, etc.)
@@ -431,133 +431,184 @@ echo 'cask "nome-do-app"' >> ~/Projects/dotfiles/Brewfile
 
 ## `scripts/install.sh` — bootstrap
 
-Script que configura tudo do zero em uma máquina nova.
+Script que configura o ambiente. Dois princípios de design:
 
-### Cabeçalho
-```bash
-#!/usr/bin/env bash
-```
-Shebang — diz ao sistema para usar o bash encontrado no PATH (em vez de hardcodar `/bin/bash`).  
-Importante porque o macOS tem bash 3.2 em `/bin/bash`, mas instalamos o bash 5 via brew.
+1. **Seleção** — você escolhe o que instalar (menu por categoria, com drill-down por app).
+2. **Nunca aborta** — se um app falhar, o script continua, configura todo o resto, e lista as falhas juntas no resumo final.
 
+### Modos de uso
 ```bash
-set -e
+bash scripts/install.sh                    # menu interativo
+bash scripts/install.sh --all              # instala tudo, sem perguntar
+bash scripts/install.sh --only=dev,browsers  # só essas categorias
+bash scripts/install.sh --only=1,4          # idem, por número
+bash scripts/install.sh --dry-run           # mostra o plano, não instala
+bash scripts/install.sh --list              # lista as categorias
+bash scripts/install.sh --help
 ```
-Para o script imediatamente se qualquer comando falhar.  
-Sem isso, um erro no meio do script seria ignorado e os próximos passos rodariam com estado inválido.
 
-```bash
-DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-```
-Descobre o caminho absoluto do repositório dotfiles, independente de onde o script é chamado.  
-`${BASH_SOURCE[0]}` → caminho do script atual (`scripts/install.sh`)  
-`dirname` → pega só a pasta (`scripts/`)  
-`cd .. && pwd` → sobe um nível e retorna o caminho absoluto (`/Users/xxx/Projects/dotfiles`)
+`--only` casa por número da categoria **ou** por parte do nome (case-insensitive).
+`--dry-run` combina com qualquer modo.
 
-### Funções de log
-```bash
-log()    { echo -e "\n${BOLD}${BLUE}▶ $1${NC}"; }    # seção principal
-ok()     { echo -e "  ${GREEN}✅ $1${NC}"; }          # sucesso
-warn()   { echo -e "  ${YELLOW}⚠️  $1${NC}"; }        # aviso
-fail()   { echo -e "  ${RED}❌ $1${NC}"; }            # erro
+### O menu
 ```
-Funções auxiliares para output colorido e consistente.  
-`\033[0;32m` são códigos ANSI de cor. `NC` = No Color (reset).
+  [x] 1.  CLI Tools               (6/6)
+  [x] 2.  Languages / Runtimes    (1/1)
+  [ ] 3.  Browsers                (0/3)
+  [~] 7.  Dev Tools               (5/7)
 
-### Passo 1 — Homebrew
-```bash
-if ! command -v brew &>/dev/null; then
+  número alterna    e<número> expande categoria
+  a marca tudo      n desmarca tudo
+  ENTER instalar    q sair
 ```
-`command -v brew` testa se `brew` existe no PATH.  
-`!` inverte — entra no if só se **não** existir.  
-`&>/dev/null` redireciona stdout e stderr para /dev/null (silencia o output).
 
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-Baixa e executa o instalador oficial do Homebrew.  
-`curl -fsSL`: `-f` falha silenciosamente em erros HTTP, `-s` silencioso, `-S` mostra erros, `-L` segue redirects.
+| Marca | Significado |
+|---|---|
+| `[x]` | categoria inteira selecionada |
+| `[ ]` | nada selecionado |
+| `[~]` | seleção parcial (drill-down) |
+
+`e7` entra na categoria 7 e mostra app por app. Dentro dela: número alterna, `a`/`n` marcam tudo/nada, `ENTER` ou `b` volta.
+Aceita múltiplos tokens numa linha: `n 3 7` desmarca tudo, depois marca Browsers e Dev Tools.
+
+### Catálogo — Brewfile é a fonte da verdade
+
+O script **não** tem lista de apps hardcoded. Ele parseia o Brewfile:
 
 ```bash
-[[ -f /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"
+'# ──'*)   # header vira categoria
+  name="$(printf '%s' "$line" | sed -e 's/^# ──[[:space:]]*//' -e 's/[[:space:]]*─*[[:space:]]*$//')"
+brew*'"'*|cask*'"'*)   # linha vira item, comentário vira descrição
+  id="$(printf '%s'   "$line" | sed -n 's/^[a-z]*[[:space:]]*"\([^"]*\)".*/\1/p')"
+  desc="$(printf '%s' "$line" | sed -n 's/^[^#]*#[[:space:]]*//p')"
 ```
-Após instalar, configura as variáveis de ambiente do Homebrew para o script atual.  
-Sem isso, `brew` não estaria disponível no restante do script.  
-`eval` executa o output do comando (adiciona brew ao PATH da sessão atual).
 
-### Passo 2 — Brewfile
-```bash
-brew bundle --file="$DOTFILES/Brewfile" --no-lock
-```
-Instala todos os itens do Brewfile.  
-`--no-lock` não cria/atualiza o `Brewfile.lock.json` (arquivo de versões fixas).  
-Omitimos o lock porque preferimos sempre instalar as versões mais recentes.
+Consequência prática: **adicionar um app ao Brewfile já o faz aparecer no menu.** Nada a atualizar no script.
+Um header `# ── Nome ──` só vira categoria se tiver pelo menos um `brew`/`cask` embaixo (por isso o header "Xcode" do Brewfile, que só tem comentários, não gera categoria vazia).
 
-### Passo 3 — SDKMAN
-```bash
-if [[ ! -d "$HOME/.sdkman" ]]; then
-```
-Verifica se a pasta `~/.sdkman` já existe antes de instalar.  
-Evita reinstalar e sobrescrever configurações existentes.
+Depois do parse, o script acrescenta 3 categorias que não são pacotes brew:
 
-```bash
-curl -s "https://get.sdkman.io" | bash
-```
-Baixa e executa o instalador do SDKMAN.  
-SDKMAN gerencia múltiplas versões de Java, Kotlin, Gradle, Maven, etc.
+| Categoria | Itens |
+|---|---|
+| Toolchain Mobile | `sdkman`, `java17`, `eascli` |
+| Shell | `zshrc` (symlink) |
+| Xcode | `xcode` (xcode-select + licença) |
+
+### Estruturas de dados
+
+Arrays indexados paralelos — **não** associativos (`declare -A`), porque o macOS traz bash 3.2 e o script precisa rodar antes do bash 5 ser instalado:
 
 ```bash
-source "$HOME/.sdkman/bin/sdkman-init.sh"
+CAT_NAME=()                                  # nomes das categorias
+ITEM_CAT=(); ITEM_TYPE=(); ITEM_ID=()        # índice da categoria, brew|cask|step, nome
+ITEM_DESC=(); ITEM_SEL=()                    # descrição, 1|0 selecionado
 ```
-Carrega o SDKMAN no contexto do script para que o comando `sdk` esteja disponível nos passos seguintes.
 
-### Passo 4 — Java 17
-```bash
-if ! sdk list java 2>/dev/null | grep -q "17.0.11-tem.*installed"; then
-```
-Verifica se o Java 17 Temurin já está instalado antes de baixar novamente.  
-`grep -q` — modo silencioso, só retorna o código de saída (0=encontrou, 1=não encontrou).
+Pelo mesmo motivo o script evita `mapfile`, `${var,,}` e `set -e`.
 
-```bash
-sdk install java 17.0.11-tem
-```
-Instala Java 17.0.11 distribuição Temurin (Eclipse Foundation — versão open-source do OpenJDK).  
-Temurin é a distribuição recomendada para Android builds por ser LTS e bem mantida.
+### Por que não tem `set -e`
+
+`set -e` aborta no primeiro erro — exatamente o oposto do que queremos. Se o Docker falhar, o `.zshrc` ainda precisa ser configurado. O controle de erro é explícito:
 
 ```bash
-sdk default java 17.0.11-tem
-```
-Define esta versão como padrão para todas as sessões de terminal.  
-Cria o symlink `~/.sdkman/candidates/java/current` → `17.0.11-tem`.
+capture() {   # roda o comando, guarda saída em LAST_OUT + log, devolve o rc
+  LAST_OUT="$("$@" 2>&1)"; local rc=$?
+  { echo "\$ $*"; printf '%s\n' "$LAST_OUT"; echo "--- rc=$rc"; } >> "$LOG"
+  return $rc
+}
 
-### Passo 5 — EAS CLI
-```bash
-npm install -g eas-cli 2>/dev/null
+record_fail() { FAIL_NAME+=("$1"); FAIL_MSG+=("$2"); fail "$1 — $2"; }
 ```
-Instala o EAS CLI globalmente via npm.  
-`-g` = global (disponível em qualquer diretório).  
-`2>/dev/null` silencia warnings do npm (funding messages, etc.).
 
-### Passo 6 — Symlink .zshrc
-```bash
-if [[ -f "$ZSHRC_TARGET" && ! -L "$ZSHRC_TARGET" ]]; then
-```
-`-f` verifica se é um arquivo regular (não symlink).  
-`! -L` verifica que NÃO é um symlink já existente.  
-Só faz backup se for um arquivo real — evita backup de symlink.
+Cada instalação vira `if capture ...; then ok; else record_fail; fi`. O loop nunca para.
+
+### Contadores e coleta
 
 ```bash
-ln -sf "$ZSHRC_SOURCE" "$ZSHRC_TARGET"
+OK_COUNT=0; SKIP_COUNT=0
+FAIL_NAME=(); FAIL_MSG=()   # falhas: nome + causa
+WARN_MSG=()                 # não-fatais (ex: sdk default falhou)
+NOTE_MSG=()                 # próximos passos manuais
 ```
-Cria um symlink.  
-`-s` = symbolic link (em vez de hard link).  
-`-f` = force (sobrescreve se já existir).  
-Resultado: `~/.zshrc` → `~/Projects/dotfiles/zsh/.zshrc`.
 
-### Passos 7 e 8 — Xcode e Android Studio
-Apenas verificam se já estão instalados e exibem avisos se não estiverem.  
-Xcode não pode ser automatizado (App Store).  
-Android Studio é instalado pelo Brewfile — o script só lembra de configurar o SDK dentro dele.
+`last_error_line()` filtra a saída do comando por `error|fatal|denied|not found|failed` e pega a última linha — é isso que aparece no resumo, em vez de despejar 200 linhas de log.
+
+### Idempotência
+
+Todo item checa antes de instalar:
+
+| Tipo | Checagem | Resultado |
+|---|---|---|
+| `brew` | `brew list --formula <id>` | `⏭  já instalado` |
+| `cask` | `brew list --cask <id>` | `⏭  já instalado` |
+| sdkman | `-d ~/.sdkman` | pula |
+| java17 | `sdk list java \| grep 17.0.11-tem.*installed` | pula |
+| eascli | `command -v eas` | pula |
+| zshrc | `readlink ~/.zshrc` == origem | pula |
+
+Rodar de novo é barato — só instala o que falta.
+
+### Casks: `--adopt`
+
+```bash
+brew install --cask --adopt "$1" || brew install --cask "$1"
+```
+
+`--adopt` faz o brew assumir o controle de um app que já está em `/Applications` mas foi instalado manualmente — sem isso o brew falha com *"It seems there is already an App at..."*. O fallback sem a flag cobre versões antigas do Homebrew que não a conhecem.
+
+### Dependências entre etapas
+
+Etapas dependentes não travam o script — viram falha com a causa explícita:
+
+```bash
+step_java17() {
+  if [ ! -s "$HOME/.sdkman/bin/sdkman-init.sh" ]; then
+    record_fail "java17" "SDKMAN ausente — selecione/instale SDKMAN antes"
+    return
+  fi
+```
+
+Mesmo padrão em `step_eascli` (precisa de `npm`) e nos itens brew/cask (precisam do Homebrew: se o brew falhar, todos são marcados `pulado: Homebrew indisponível` em vez de gerar N erros idênticos).
+
+### `pad()` em vez de `printf %-24s`
+
+```bash
+pad() { local s="$1" w="$2"; while [ ${#s} -lt "$w" ]; do s="$s "; done; printf '%s' "$s"; }
+```
+
+O `printf` do bash conta o campo em **bytes**; `${#s}` conta **caracteres**. Com "Comunicação" (ç e ã ocupam 2 bytes cada em UTF-8) o `%-24s` desalinharia a coluna em 2 espaços. `pad()` alinha certo.
+
+### Resumo final
+
+```
+  RESUMO
+
+    ✅ instalados:   14
+    ⏭  já presentes: 3
+    ⚠️  avisos:      1
+    ❌ falhas:      2
+
+  Falhas — o resto foi configurado normalmente
+    ❌ docker
+       brew install --cask falhou: Error: Cask 'docker' is unavailable.
+
+    Log completo: ~/.dotfiles-install-20260819_095441.log
+
+  Próximos passos
+    → source ~/.zshrc — recarregar o shell
+    → Android Studio → SDK Manager → instalar Android SDK API 34
+```
+
+Exit code: `0` sem falhas, `1` com falhas — dá pra usar em CI ou encadear com `&&`.
+O log completo (todo comando + saída + rc) fica em `~/.dotfiles-install-<timestamp>.log`.
+
+### Para reinstalar só o que falhou
+
+```bash
+bash scripts/install.sh             # menu → n (desmarca tudo) → marca só os itens que falharam
+bash scripts/install.sh --only=7    # ou a categoria inteira (idempotente: pula os que já foram)
+```
+
 
 ---
 

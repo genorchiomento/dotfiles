@@ -1,7 +1,7 @@
 # dotfiles
 
 Setup automático do ambiente de desenvolvimento macOS (Apple Silicon).  
-Um comando instala tudo — apps, CLI tools, aliases, variáveis de ambiente.
+Um comando instala apps, CLI tools, aliases e variáveis de ambiente — e você escolhe o que entra.
 
 ---
 
@@ -11,14 +11,66 @@ Um comando instala tudo — apps, CLI tools, aliases, variáveis de ambiente.
 # 1. Clonar
 git clone https://github.com/genorchiomento/dotfiles.git ~/Projects/dotfiles
 
-# 2. Executar bootstrap
+# 2. Executar bootstrap (menu interativo)
 bash ~/Projects/dotfiles/scripts/install.sh
 
 # 3. Recarregar shell
 source ~/.zshrc
 ```
 
-> **Tempo estimado:** 15–30 min (depende da velocidade da internet — instala ~1.5GB de apps)
+> **Tempo estimado:** 15–30 min instalando tudo (~1.5GB de apps). Selecionando só o que precisa, bem menos.
+
+### Escolhendo o que instalar
+
+O script abre um menu por categoria:
+
+```
+  [x] 1.  CLI Tools               (6/6)
+  [x] 2.  Languages / Runtimes    (1/1)
+  [ ] 3.  Browsers                (0/3)
+  [~] 7.  Dev Tools               (5/7)
+  ...
+
+  número alterna    e<número> expande categoria
+  a marca tudo      n desmarca tudo
+  ENTER instalar    q sair
+```
+
+- **número** — marca/desmarca a categoria inteira (`n 3 7` = desmarca tudo, marca Browsers e Dev Tools)
+- **`e7`** — expande a categoria 7 pra escolher app por app; `[~]` indica seleção parcial
+- **ENTER** — instala o que estiver marcado
+
+### Modo não-interativo
+
+```bash
+bash scripts/install.sh --all                  # tudo, sem perguntar
+bash scripts/install.sh --only=dev,browsers    # só essas categorias (nome ou número)
+bash scripts/install.sh --dry-run              # mostra o plano, não instala
+bash scripts/install.sh --list                 # lista as categorias
+bash scripts/install.sh --help
+```
+
+### Se algum app falhar
+
+O script **não para**. Ele instala e configura tudo que der certo, e mostra as falhas juntas no final:
+
+```
+  RESUMO
+
+    ✅ instalados:   14
+    ⏭  já presentes: 3
+    ❌ falhas:      1
+
+  Falhas — o resto foi configurado normalmente
+    ❌ docker
+       brew install --cask falhou: Error: Cask 'docker' is unavailable.
+
+    Log completo: ~/.dotfiles-install-20260819_095441.log
+```
+
+Pra tentar de novo, rode o script e marque só os itens que falharam — ele é idempotente e pula o que já está instalado.
+
+> Adicionou um app novo ao `Brewfile`? Ele aparece no menu sozinho — o catálogo é lido do próprio Brewfile.
 
 ---
 
@@ -116,7 +168,7 @@ O `ANDROID_HOME` já está configurado automaticamente em `zsh/exports.zsh`.
 dotfiles/
 ├── Brewfile                  # todos os pacotes brew/cask
 ├── scripts/
-│   └── install.sh            # bootstrap principal (1 comando)
+│   └── install.sh            # bootstrap (menu de seleção + resumo de erros)
 ├── zsh/
 │   ├── .zshrc                # entry point → symlinked para ~/.zshrc
 │   ├── exports.zsh           # variáveis de ambiente (PATH, ANDROID_HOME, JAVA_HOME)

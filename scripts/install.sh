@@ -1,138 +1,560 @@
 #!/usr/bin/env bash
 # ============================================================
-# install.sh — bootstrap completo do ambiente de desenvolvimento
-# Uso: bash ~/Projects/dotfiles/scripts/install.sh
+# install.sh — bootstrap do ambiente de desenvolvimento
+#
+# Uso:
+#   bash scripts/install.sh              # menu interativo
+#   bash scripts/install.sh --all        # instala tudo, sem menu
+#   bash scripts/install.sh --only=dev,browsers
+#   bash scripts/install.sh --dry-run    # mostra o plano, não instala
+#   bash scripts/install.sh --list       # lista categorias
+#
+# Nunca aborta no meio: erros são coletados e reportados no final.
 # ============================================================
 
-set -e
-
 DOTFILES="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BOLD='\033[1m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-RED='\033[0;31m'
-NC='\033[0m'
+BREWFILE="$DOTFILES/Brewfile"
+LOG="$HOME/.dotfiles-install-$(date +%Y%m%d_%H%M%S).log"
 
-log()    { echo -e "\n${BOLD}${BLUE}▶ $1${NC}"; }
-ok()     { echo -e "  ${GREEN}✅ $1${NC}"; }
-warn()   { echo -e "  ${YELLOW}⚠️  $1${NC}"; }
-fail()   { echo -e "  ${RED}❌ $1${NC}"; }
-divider(){ echo -e "${BOLD}────────────────────────────────────────${NC}"; }
+BOLD='\033[1m'; DIM='\033[2m'
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'
+RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 
-clear
-echo ""
-echo -e "${BOLD}╔══════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║        dotfiles — setup automático       ║${NC}"
-echo -e "${BOLD}║        macOS (Apple Silicon)             ║${NC}"
-echo -e "${BOLD}╚══════════════════════════════════════════╝${NC}"
-echo ""
+log()     { echo -e "\n${BOLD}${BLUE}▶ $1${NC}"; }
+ok()      { echo -e "  ${GREEN}✅ $1${NC}"; }
+skip()    { echo -e "  ${DIM}⏭  $1${NC}"; }
+warn()    { echo -e "  ${YELLOW}⚠️  $1${NC}"; }
+fail()    { echo -e "  ${RED}❌ $1${NC}"; }
+divider() { echo -e "${BOLD}────────────────────────────────────────────────${NC}"; }
 
-# ── 1. Homebrew ───────────────────────────────────────────
-log "Homebrew"
-if ! command -v brew &>/dev/null; then
-  echo "  Instalando Homebrew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  [[ -f /opt/homebrew/bin/brew ]] && eval "$(/opt/homebrew/bin/brew shellenv)"
-  ok "Homebrew instalado"
-else
-  ok "Homebrew: $(brew --version | head -1)"
-fi
+banner() {
+  echo ""
+  echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"
+  echo -e "${BOLD}║          dotfiles — setup automático         ║${NC}"
+  echo -e "${BOLD}║          macOS (Apple Silicon)               ║${NC}"
+  echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
+  echo ""
+}
 
-# ── 2. Brewfile (apps + cli tools) ───────────────────────
-log "Pacotes e Apps (Brewfile)"
-echo "  Isso pode demorar — instalando browsers, IDEs, dev tools..."
-brew bundle --file="$DOTFILES/Brewfile" --no-lock
-ok "Brewfile concluído"
+# ── Flags ──────────────────────────────────────────────────
+MODE="menu"; DRY_RUN=0; ONLY=""
+for arg in "$@"; do
+  case "$arg" in
+    --all)      MODE="all" ;;
+    --only=*)   MODE="only"; ONLY="${arg#--only=}" ;;
+    --dry-run)  DRY_RUN=1 ;;
+    --list)     MODE="list" ;;
+    -h|--help)  MODE="help" ;;
+    *) echo "Flag desconhecida: $arg (use --help)"; exit 2 ;;
+  esac
+done
 
-# ── 3. SDKMAN ────────────────────────────────────────────
-log "SDKMAN"
-if [[ ! -d "$HOME/.sdkman" ]]; then
-  echo "  Instalando SDKMAN..."
+show_help() {
+  banner
+  cat <<'H'
+  Uso: bash scripts/install.sh [flags]
+
+    (sem flags)        menu interativo por categoria
+    --all              instala tudo, sem perguntar
+    --only=a,b         só as categorias indicadas (número ou parte do nome)
+    --dry-run          mostra o que seria feito, sem instalar
+    --list             lista as categorias disponíveis
+    -h, --help         esta ajuda
+
+  Exemplos:
+    bash scripts/install.sh --only=dev,browsers
+    bash scripts/install.sh --only=1,4 --dry-run
+    bash scripts/install.sh --all
+
+  Erros não interrompem a instalação: tudo que der certo é configurado,
+  e as falhas aparecem juntas no resumo final (log completo em ~/.dotfiles-install-*.log).
+H
+  echo ""
+}
+
+# ── Catálogo ───────────────────────────────────────────────
+# Categorias vêm do Brewfile (headers "# ── Nome ──"), mais as
+# etapas extras definidas abaixo. Brewfile = fonte única da verdade.
+
+CAT_NAME=()
+ITEM_CAT=(); ITEM_TYPE=(); ITEM_ID=(); ITEM_DESC=(); ITEM_SEL=()
+TAPS=()
+CUR_CAT=-1
+
+add_cat()  { CAT_NAME+=("$1"); CUR_CAT=$(( ${#CAT_NAME[@]} - 1 )); }
+add_item() { # add_item <type> <id> <desc>
+  ITEM_CAT+=("$CUR_CAT"); ITEM_TYPE+=("$1"); ITEM_ID+=("$2")
+  ITEM_DESC+=("$3");      ITEM_SEL+=(1)
+}
+
+parse_brewfile() {
+  local line pending="" id desc name
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '# ──'*)
+        name="$(printf '%s' "$line" | sed -e 's/^# ──[[:space:]]*//' -e 's/[[:space:]]*─*[[:space:]]*$//')"
+        [ -n "$name" ] && pending="$name"
+        ;;
+      tap*'"'*)
+        TAPS+=("$(printf '%s' "$line" | sed -n 's/^tap[[:space:]]*"\([^"]*\)".*/\1/p')")
+        ;;
+      brew*'"'*|cask*'"'*)
+        if [ -n "$pending" ]; then add_cat "$pending"; pending=""; fi
+        [ "$CUR_CAT" -lt 0 ] && continue
+        id="$(printf '%s'   "$line" | sed -n 's/^[a-z]*[[:space:]]*"\([^"]*\)".*/\1/p')"
+        desc="$(printf '%s' "$line" | sed -n 's/^[^#]*#[[:space:]]*//p')"
+        [ -z "$id" ] && continue
+        case "$line" in brew*) add_item brew "$id" "$desc" ;; *) add_item cask "$id" "$desc" ;; esac
+        ;;
+    esac
+  done < "$BREWFILE"
+}
+
+build_catalog() {
+  if [ ! -f "$BREWFILE" ]; then
+    fail "Brewfile não encontrado em $BREWFILE"; exit 1
+  fi
+  parse_brewfile
+
+  add_cat "Toolchain Mobile"
+  add_item step sdkman  "SDKMAN (gerenciador de SDKs Java)"
+  add_item step java17  "Java 17 Temurin (builds Android)"
+  add_item step eascli  "EAS CLI (Expo build service)"
+
+  add_cat "Shell"
+  add_item step zshrc   "symlink ~/.zshrc → dotfiles/zsh/.zshrc"
+
+  add_cat "Xcode"
+  add_item step xcode   "xcode-select + aceitar licença"
+}
+
+# ── Estado de seleção ──────────────────────────────────────
+CNT_SEL=0; CNT_TOT=0
+count_cat() { # count_cat <cat_idx>
+  local i=0; CNT_SEL=0; CNT_TOT=0
+  while [ $i -lt ${#ITEM_ID[@]} ]; do
+    if [ "${ITEM_CAT[$i]}" -eq "$1" ]; then
+      CNT_TOT=$(( CNT_TOT + 1 ))
+      [ "${ITEM_SEL[$i]}" -eq 1 ] && CNT_SEL=$(( CNT_SEL + 1 ))
+    fi
+    i=$(( i + 1 ))
+  done
+}
+
+set_all() { # set_all <0|1>
+  local i=0
+  while [ $i -lt ${#ITEM_SEL[@]} ]; do ITEM_SEL[$i]=$1; i=$(( i + 1 )); done
+}
+
+set_cat() { # set_cat <cat_idx> <0|1>
+  local i=0
+  while [ $i -lt ${#ITEM_ID[@]} ]; do
+    [ "${ITEM_CAT[$i]}" -eq "$1" ] && ITEM_SEL[$i]=$2
+    i=$(( i + 1 ))
+  done
+}
+
+toggle_cat() { # marca tudo se não estiver tudo marcado; senão desmarca
+  count_cat "$1"
+  if [ "$CNT_SEL" -eq "$CNT_TOT" ]; then set_cat "$1" 0; else set_cat "$1" 1; fi
+}
+
+# padding correto com acentos (printf %-Ns conta bytes, ${#s} conta chars)
+pad() { local s="$1" w="$2"; while [ ${#s} -lt "$w" ]; do s="$s "; done; printf '%s' "$s"; }
+
+# ── Menu ───────────────────────────────────────────────────
+render_menu() {
+  clear; banner
+  echo -e "  ${BOLD}O que você quer instalar?${NC}\n"
+  local i=0 mark
+  while [ $i -lt ${#CAT_NAME[@]} ]; do
+    count_cat $i
+    if   [ "$CNT_SEL" -eq 0 ];         then mark=" "
+    elif [ "$CNT_SEL" -eq "$CNT_TOT" ]; then mark="x"
+    else                                    mark="~"; fi
+    echo -e "  ${BOLD}[$mark]${NC} $(pad "$(( i + 1 ))." 4)$(pad "${CAT_NAME[$i]}" 24)${DIM}($CNT_SEL/$CNT_TOT)${NC}"
+    i=$(( i + 1 ))
+  done
+  echo ""
+  echo -e "  ${DIM}número${NC} alterna    ${DIM}e<número>${NC} expande categoria"
+  echo -e "  ${DIM}a${NC} marca tudo     ${DIM}n${NC} desmarca tudo"
+  echo -e "  ${DIM}ENTER${NC} instalar    ${DIM}q${NC} sair"
+  echo ""
+}
+
+render_cat() { # render_cat <cat_idx>
+  clear; banner
+  echo -e "  ${BOLD}${CAT_NAME[$1]}${NC}\n"
+  local i=0 n=0 mark
+  while [ $i -lt ${#ITEM_ID[@]} ]; do
+    if [ "${ITEM_CAT[$i]}" -eq "$1" ]; then
+      n=$(( n + 1 ))
+      [ "${ITEM_SEL[$i]}" -eq 1 ] && mark="x" || mark=" "
+      echo -e "  ${BOLD}[$mark]${NC} $(pad "$n." 4)$(pad "${ITEM_ID[$i]}" 24)${DIM}${ITEM_DESC[$i]}${NC}"
+    fi
+    i=$(( i + 1 ))
+  done
+  echo ""
+  echo -e "  ${DIM}número${NC} alterna   ${DIM}a${NC} tudo   ${DIM}n${NC} nada   ${DIM}ENTER/b${NC} voltar"
+  echo ""
+}
+
+nth_item_in_cat() { # nth_item_in_cat <cat_idx> <n> -> ecoa índice global ou -1
+  local i=0 n=0
+  while [ $i -lt ${#ITEM_ID[@]} ]; do
+    if [ "${ITEM_CAT[$i]}" -eq "$1" ]; then
+      n=$(( n + 1 ))
+      [ "$n" -eq "$2" ] && { echo "$i"; return; }
+    fi
+    i=$(( i + 1 ))
+  done
+  echo "-1"
+}
+
+cat_submenu() { # cat_submenu <cat_idx>
+  local input tok idx
+  while true; do
+    render_cat "$1"
+    read -r -p "  > " input
+    [ -z "$input" ] && return
+    for tok in $input; do
+      case "$tok" in
+        b|B|q|Q) return ;;
+        a|A) set_cat "$1" 1 ;;
+        n|N) set_cat "$1" 0 ;;
+        ''|*[!0-9]*) ;;
+        *)
+          idx="$(nth_item_in_cat "$1" "$tok")"
+          if [ "$idx" -ge 0 ]; then
+            [ "${ITEM_SEL[$idx]}" -eq 1 ] && ITEM_SEL[$idx]=0 || ITEM_SEL[$idx]=1
+          fi
+          ;;
+      esac
+    done
+  done
+}
+
+main_menu() {
+  local input tok
+  while true; do
+    render_menu
+    read -r -p "  > " input
+    case "$input" in
+      "")   return 0 ;;
+      q|Q)  echo -e "\n  Cancelado.\n"; exit 0 ;;
+    esac
+    for tok in $input; do
+      case "$tok" in
+        a|A) set_all 1 ;;
+        n|N) set_all 0 ;;
+        e*|E*)
+          tok="${tok#[eE]}"
+          case "$tok" in ''|*[!0-9]*) continue ;; esac
+          [ "$tok" -ge 1 ] && [ "$tok" -le ${#CAT_NAME[@]} ] && cat_submenu $(( tok - 1 ))
+          ;;
+        ''|*[!0-9]*) ;;
+        *)
+          [ "$tok" -ge 1 ] && [ "$tok" -le ${#CAT_NAME[@]} ] && toggle_cat $(( tok - 1 ))
+          ;;
+      esac
+    done
+  done
+}
+
+apply_only() { # apply_only "dev,browsers" — número ou parte do nome (case-insensitive)
+  set_all 0
+  local spec found i lname
+  IFS=',' read -r -a specs <<< "$1"
+  for spec in "${specs[@]}"; do
+    spec="$(printf '%s' "$spec" | tr '[:upper:]' '[:lower:]' | tr -d ' ')"
+    [ -z "$spec" ] && continue
+    found=0; i=0
+    while [ $i -lt ${#CAT_NAME[@]} ]; do
+      lname="$(printf '%s' "${CAT_NAME[$i]}" | tr '[:upper:]' '[:lower:]')"
+      case "$spec" in
+        ''|*[!0-9]*)
+          case "$lname" in *"$spec"*) set_cat $i 1; found=1 ;; esac ;;
+        *)
+          [ "$spec" -eq $(( i + 1 )) ] && { set_cat $i 1; found=1; } ;;
+      esac
+      i=$(( i + 1 ))
+    done
+    [ "$found" -eq 0 ] && warn "--only: nenhuma categoria bate com '$spec'"
+  done
+}
+
+list_cats() {
+  banner
+  echo -e "  ${BOLD}Categorias disponíveis:${NC}\n"
+  local i=0
+  while [ $i -lt ${#CAT_NAME[@]} ]; do
+    count_cat $i
+    echo -e "  $(pad "$(( i + 1 ))." 4)$(pad "${CAT_NAME[$i]}" 24)${DIM}$CNT_TOT item(ns)${NC}"
+    i=$(( i + 1 ))
+  done
+  echo ""
+}
+
+# ── Execução com coleta de erros ───────────────────────────
+OK_COUNT=0; SKIP_COUNT=0
+FAIL_NAME=(); FAIL_MSG=()
+WARN_MSG=(); NOTE_MSG=()
+LAST_OUT=""
+
+capture() { # capture <cmd...> — nunca aborta, guarda saída em LAST_OUT + log
+  if [ "$DRY_RUN" -eq 1 ]; then echo -e "  ${DIM}[dry-run] $*${NC}"; LAST_OUT=""; return 0; fi
+  LAST_OUT="$("$@" 2>&1)"; local rc=$?
+  { echo "\$ $*"; printf '%s\n' "$LAST_OUT"; echo "--- rc=$rc"; echo ""; } >> "$LOG"
+  return $rc
+}
+
+record_fail() { # record_fail <nome> <o que falhou>
+  FAIL_NAME+=("$1"); FAIL_MSG+=("$2")
+  fail "$1 — $2"
+}
+
+last_error_line() {
+  printf '%s' "$LAST_OUT" | grep -iE 'error|fatal|denied|not found|failed' | tail -1 | cut -c1-120
+}
+
+install_brew() { # install_brew <id> <desc>
+  if brew list --formula "$1" &>/dev/null; then skip "$1 (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
+  echo -e "  ${CYAN}⏳ $1${NC}"
+  if capture brew install "$1"; then ok "$1"; OK_COUNT=$(( OK_COUNT + 1 ))
+  else record_fail "$1" "brew install falhou: $(last_error_line)"; fi
+}
+
+install_cask() { # install_cask <id> <desc>
+  if brew list --cask "$1" &>/dev/null; then skip "$1 (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
+  echo -e "  ${CYAN}⏳ $1${NC}"
+  if capture brew install --cask --adopt "$1" || capture brew install --cask "$1"; then
+    ok "$1"; OK_COUNT=$(( OK_COUNT + 1 ))
+  else
+    record_fail "$1" "brew install --cask falhou: $(last_error_line)"
+  fi
+}
+
+step_sdkman() {
+  if [ -d "$HOME/.sdkman" ]; then skip "SDKMAN (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
   export SDKMAN_DIR="$HOME/.sdkman"
-  curl -s "https://get.sdkman.io" | bash
-  ok "SDKMAN instalado"
-else
-  ok "SDKMAN já instalado"
-fi
-source "$HOME/.sdkman/bin/sdkman-init.sh"
+  if capture bash -c 'curl -fsSL "https://get.sdkman.io?rcupdate=false" | bash'; then
+    ok "SDKMAN instalado"; OK_COUNT=$(( OK_COUNT + 1 ))
+  else
+    record_fail "sdkman" "instalação falhou: $(last_error_line)"
+  fi
+}
 
-# ── 4. Java 17 (Android builds) ──────────────────────────
-log "Java 17 (Temurin)"
-if ! sdk list java 2>/dev/null | grep -q "17.0.11-tem.*installed"; then
-  echo "  Instalando Java 17..."
-  sdk install java 17.0.11-tem
-  ok "Java 17 instalado"
-else
-  ok "Java 17 já instalado"
-fi
-sdk default java 17.0.11-tem
-ok "Java default: $(java -version 2>&1 | head -1)"
+step_java17() {
+  local init="$HOME/.sdkman/bin/sdkman-init.sh"
+  if [ ! -s "$init" ]; then
+    record_fail "java17" "SDKMAN ausente — selecione/instale SDKMAN antes"
+    return
+  fi
+  # shellcheck disable=SC1090
+  set +u; . "$init" >/dev/null 2>&1; set -u 2>/dev/null || true
+  if sdk list java 2>/dev/null | grep -q '17\.0\.11-tem.*installed'; then
+    skip "Java 17 (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 ))
+  else
+    echo -e "  ${CYAN}⏳ Java 17 Temurin${NC}"
+    if capture bash -c ". \"$init\" && sdk install java 17.0.11-tem"; then
+      ok "Java 17 instalado"; OK_COUNT=$(( OK_COUNT + 1 ))
+    else
+      record_fail "java17" "sdk install falhou: $(last_error_line)"; return
+    fi
+  fi
+  capture bash -c ". \"$init\" && sdk default java 17.0.11-tem" \
+    || WARN_MSG+=("não consegui definir Java 17 como default (rode: sdk default java 17.0.11-tem)")
+}
 
-# ── 5. EAS CLI ───────────────────────────────────────────
-log "EAS CLI (Expo)"
-npm install -g eas-cli 2>/dev/null
-ok "EAS CLI: $(eas --version 2>/dev/null | head -1)"
+step_eascli() {
+  if ! command -v npm >/dev/null 2>&1; then
+    record_fail "eas-cli" "npm não encontrado — instale a categoria Languages/Runtimes (node) antes"
+    return
+  fi
+  if command -v eas >/dev/null 2>&1; then skip "EAS CLI (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
+  echo -e "  ${CYAN}⏳ eas-cli${NC}"
+  if capture npm install -g eas-cli; then
+    ok "EAS CLI instalado"; OK_COUNT=$(( OK_COUNT + 1 ))
+    NOTE_MSG+=("eas login — autenticar no Expo")
+  else
+    record_fail "eas-cli" "npm install -g falhou: $(last_error_line)"
+  fi
+}
 
-# ── 6. Symlink .zshrc ────────────────────────────────────
-log "Configurando ~/.zshrc"
-ZSHRC_SOURCE="$DOTFILES/zsh/.zshrc"
-ZSHRC_TARGET="$HOME/.zshrc"
+step_zshrc() {
+  local src="$DOTFILES/zsh/.zshrc" dst="$HOME/.zshrc"
+  if [ ! -f "$src" ]; then record_fail "zshrc" "origem não existe: $src"; return; fi
+  if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+    skip "~/.zshrc (symlink já correto)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return
+  fi
+  if [ -f "$dst" ] && [ ! -L "$dst" ]; then
+    local backup="$HOME/.zshrc.backup.$(date +%Y%m%d_%H%M%S)"
+    if cp "$dst" "$backup"; then warn "backup do .zshrc antigo em $backup"
+    else record_fail "zshrc" "não consegui fazer backup de $dst"; return; fi
+  fi
+  if capture ln -sfn "$src" "$dst"; then
+    ok "~/.zshrc → dotfiles/zsh/.zshrc"; OK_COUNT=$(( OK_COUNT + 1 ))
+    NOTE_MSG+=("source ~/.zshrc — recarregar o shell")
+  else
+    record_fail "zshrc" "symlink falhou: $(last_error_line)"
+  fi
+}
 
-if [[ -f "$ZSHRC_TARGET" && ! -L "$ZSHRC_TARGET" ]]; then
-  BACKUP="$HOME/.zshrc.backup.$(date +%Y%m%d_%H%M%S)"
-  warn "Backup salvo em $BACKUP"
-  cp "$ZSHRC_TARGET" "$BACKUP"
-fi
-
-ln -sf "$ZSHRC_SOURCE" "$ZSHRC_TARGET"
-ok "~/.zshrc → symlink para dotfiles/zsh/.zshrc"
-
-# ── 7. Xcode ─────────────────────────────────────────────
-log "Xcode"
-if [[ -d "/Applications/Xcode.app" ]]; then
-  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer 2>/dev/null || true
-  sudo xcodebuild -license accept 2>/dev/null || true
+step_xcode() {
+  if [ ! -d "/Applications/Xcode.app" ]; then
+    record_fail "xcode" "Xcode.app não instalado — instale pela App Store: mas install 497799835"
+    return
+  fi
+  capture sudo xcode-select -s /Applications/Xcode.app/Contents/Developer \
+    || WARN_MSG+=("xcode-select falhou (rode manualmente com sudo)")
+  capture sudo xcodebuild -license accept \
+    || WARN_MSG+=("licença do Xcode não aceita (rode: sudo xcodebuild -license accept)")
   ok "Xcode: $(xcodebuild -version 2>/dev/null | head -1)"
-else
-  warn "Xcode não instalado — passos manuais:"
-  warn "  1. mas install 497799835"
-  warn "  2. sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
-  warn "  3. sudo xcodebuild -license accept"
-fi
+  OK_COUNT=$(( OK_COUNT + 1 ))
+}
 
-# ── 8. DBeaver Community ─────────────────────────────────
-log "DBeaver Community"
-if [[ -d "/Applications/DBeaver.app" ]]; then
-  ok "DBeaver Community instalado"
-else
-  warn "DBeaver não encontrado (deveria ter sido instalado pelo Brewfile)"
-fi
+ensure_homebrew() {
+  log "Homebrew"
+  if command -v brew >/dev/null 2>&1; then ok "$(brew --version | head -1)"; return 0; fi
+  if [ "$DRY_RUN" -eq 1 ]; then echo -e "  ${DIM}[dry-run] instalaria Homebrew${NC}"; return 0; fi
+  echo "  Instalando Homebrew..."
+  if capture bash -c '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'; then
+    [ -f /opt/homebrew/bin/brew ] && eval "$(/opt/homebrew/bin/brew shellenv)"
+    ok "Homebrew instalado"; return 0
+  fi
+  record_fail "homebrew" "instalação falhou — nada que dependa de brew vai rodar"
+  return 1
+}
 
-# ── 9. Android SDK ───────────────────────────────────────
-log "Android Studio"
-if [[ -d "/Applications/Android Studio.app" ]]; then
-  ok "Android Studio instalado"
-  warn "Ação necessária: abra o Android Studio e instale Android SDK API 34"
-else
-  warn "Android Studio não encontrado (deveria ter sido instalado pelo Brewfile)"
-fi
+install_taps() {
+  [ ${#TAPS[@]} -eq 0 ] && return
+  log "Taps"
+  local t
+  for t in "${TAPS[@]}"; do
+    [ -z "$t" ] && continue
+    if brew tap | grep -qx "$t"; then skip "$t"; continue; fi
+    capture brew tap "$t" && ok "$t" || record_fail "tap $t" "brew tap falhou: $(last_error_line)"
+  done
+}
 
-# ── 10. Resumo final ─────────────────────────────────────
-divider
-echo ""
-echo -e "${BOLD}${GREEN}  Setup concluído! 🎉${NC}"
-echo ""
-echo -e "${BOLD}  Próximos passos:${NC}"
-echo "  1.  source ~/.zshrc"
-echo "  2.  Abra Android Studio → SDK Manager → instale API 34"
-echo "  3.  eas login               (autenticar no Expo)"
-echo "  4.  Abra Xcode → aceite termos (se necessário)"
-echo ""
-echo -e "${BOLD}  Criar primeiro app Expo:${NC}"
-echo "  cd ~/Projects"
-echo "  expo-new-stack              (seletor interativo)"
-echo "  # ou"
-echo "  expo-new-pro <NomeApp>      (template produção completo)"
-echo ""
-divider
+run_install() {
+  local i=0 c=-1 has_brew=1 selected=0
+
+  while [ $i -lt ${#ITEM_SEL[@]} ]; do
+    [ "${ITEM_SEL[$i]}" -eq 1 ] && selected=$(( selected + 1 ))
+    i=$(( i + 1 ))
+  done
+  if [ "$selected" -eq 0 ]; then echo -e "\n  Nada selecionado. Saindo.\n"; exit 0; fi
+
+  clear; banner
+  echo -e "  ${DIM}Log completo: $LOG${NC}"
+  [ "$DRY_RUN" -eq 1 ] && echo -e "  ${YELLOW}MODO DRY-RUN — nada será instalado${NC}"
+  echo "dotfiles install — $(date)" > "$LOG"
+
+  # brew só é necessário se houver item brew/cask selecionado
+  i=0
+  local needs_brew=0
+  while [ $i -lt ${#ITEM_ID[@]} ]; do
+    if [ "${ITEM_SEL[$i]}" -eq 1 ]; then
+      case "${ITEM_TYPE[$i]}" in brew|cask) needs_brew=1 ;; esac
+    fi
+    i=$(( i + 1 ))
+  done
+  if [ "$needs_brew" -eq 1 ]; then
+    ensure_homebrew || has_brew=0
+    [ "$has_brew" -eq 1 ] && install_taps
+  fi
+
+  i=0
+  while [ $i -lt ${#ITEM_ID[@]} ]; do
+    if [ "${ITEM_SEL[$i]}" -eq 1 ]; then
+      if [ "${ITEM_CAT[$i]}" -ne "$c" ]; then
+        c="${ITEM_CAT[$i]}"; log "${CAT_NAME[$c]}"
+      fi
+      case "${ITEM_TYPE[$i]}" in
+        brew) if [ "$has_brew" -eq 1 ]; then install_brew "${ITEM_ID[$i]}"
+              else record_fail "${ITEM_ID[$i]}" "pulado: Homebrew indisponível"; fi ;;
+        cask) if [ "$has_brew" -eq 1 ]; then install_cask "${ITEM_ID[$i]}"
+              else record_fail "${ITEM_ID[$i]}" "pulado: Homebrew indisponível"; fi ;;
+        step)
+          if [ "$DRY_RUN" -eq 1 ]; then echo -e "  ${DIM}[dry-run] etapa: ${ITEM_ID[$i]}${NC}"
+          else
+            case "${ITEM_ID[$i]}" in
+              sdkman) step_sdkman ;; java17) step_java17 ;; eascli) step_eascli ;;
+              zshrc)  step_zshrc  ;; xcode)  step_xcode  ;;
+            esac
+          fi
+          ;;
+      esac
+      [ "${ITEM_ID[$i]}" = "android-studio" ] && \
+        NOTE_MSG+=("Android Studio → SDK Manager → instalar Android SDK API 34")
+    fi
+    i=$(( i + 1 ))
+  done
+}
+
+final_report() {
+  echo ""
+  divider
+  echo ""
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo -e "  ${BOLD}${YELLOW}Dry-run concluído — nada foi instalado.${NC}\n"
+    return 0
+  fi
+
+  echo -e "  ${BOLD}RESUMO${NC}\n"
+  echo -e "    ${GREEN}✅ instalados:${NC}   $OK_COUNT"
+  echo -e "    ${DIM}⏭  já presentes:${NC} $SKIP_COUNT"
+  echo -e "    ${YELLOW}⚠️  avisos:${NC}      ${#WARN_MSG[@]}"
+  echo -e "    ${RED}❌ falhas:${NC}      ${#FAIL_NAME[@]}"
+
+  if [ ${#WARN_MSG[@]} -gt 0 ]; then
+    echo -e "\n  ${BOLD}${YELLOW}Avisos${NC}"
+    local w; for w in "${WARN_MSG[@]}"; do echo -e "    ${YELLOW}⚠️${NC}  $w"; done
+  fi
+
+  if [ ${#FAIL_NAME[@]} -gt 0 ]; then
+    echo -e "\n  ${BOLD}${RED}Falhas — o resto foi configurado normalmente${NC}"
+    local i=0
+    while [ $i -lt ${#FAIL_NAME[@]} ]; do
+      echo -e "    ${RED}❌ ${FAIL_NAME[$i]}${NC}"
+      echo -e "       ${DIM}${FAIL_MSG[$i]}${NC}"
+      i=$(( i + 1 ))
+    done
+    echo -e "\n    ${DIM}Log completo: $LOG${NC}"
+    echo -e "    ${DIM}Reinstalar só o que falhou: bash scripts/install.sh (marque só esses itens)${NC}"
+  fi
+
+  if [ ${#NOTE_MSG[@]} -gt 0 ]; then
+    echo -e "\n  ${BOLD}Próximos passos${NC}"
+    local n; for n in "${NOTE_MSG[@]}"; do echo -e "    ${BLUE}→${NC} $n"; done
+  fi
+
+  echo ""
+  if [ ${#FAIL_NAME[@]} -gt 0 ]; then
+    echo -e "  ${BOLD}${YELLOW}Setup concluído com ${#FAIL_NAME[@]} falha(s).${NC}"
+  else
+    echo -e "  ${BOLD}${GREEN}Setup concluído! 🎉${NC}"
+  fi
+  echo ""
+  divider
+  [ ${#FAIL_NAME[@]} -gt 0 ] && return 1
+  return 0
+}
+
+# ── Main ───────────────────────────────────────────────────
+case "$MODE" in
+  help) show_help; exit 0 ;;
+esac
+
+build_catalog
+
+case "$MODE" in
+  list) list_cats; exit 0 ;;
+  all)  ;;                      # tudo já vem marcado por padrão
+  only) apply_only "$ONLY" ;;
+  menu) main_menu ;;
+esac
+
+run_install
+final_report
