@@ -87,3 +87,8 @@ alias easum="eas update --branch main"
 alias eassubi="eas submit --platform ios"
 alias eassuba="eas submit --platform android"
 alias easinfo="eas project:info"
+
+# === Scripts pessoais ===
+# Só definidos se o script existir — evita alias quebrado em máquina nova
+[[ -f "$HOME/Projects/scripts/hotmart-downloader/server.py" ]] && \
+  alias hotmart="python3 $HOME/Projects/scripts/hotmart-downloader/server.py"
