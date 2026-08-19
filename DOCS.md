@@ -667,12 +667,43 @@ pad() { local s="$1" w="$2"; while [ ${#s} -lt "$w" ]; do s="$s "; done; printf 
 
 O `printf` do bash conta o campo em **bytes**; `${#s}` conta **caracteres**. Com "Comunicação" (ç e ã ocupam 2 bytes cada em UTF-8) o `%-24s` desalinharia a coluna em 2 espaços. `pad()` alinha certo.
 
+### Relatório de configuração
+
+Contar apps instalados não conta a história toda — aliases, variáveis de ambiente e toolchain também foram aplicados. `config_report()` inspeciona o **estado real** depois da instalação, em vez de repetir o que o script tentou fazer.
+
+**Aliases por categoria** saem de um awk sobre o próprio `aliases.zsh`, usando os headers `# === Nome ===` como divisores:
+
+```bash
+awk '
+  /^# === / { name = $0; sub(/^# === /, "", name); sub(/ ===$/, "", name)
+              cats[++k] = name; next }
+  /^[[:space:]]*alias / { if (k > 0) cnt[k]++ }
+  END { for (i = 1; i <= k; i++) printf "%s\t%d\n", cats[i], cnt[i] + 0 }
+' "$1"
+```
+
+O `[[:space:]]*` importa: aliases guardados por condição são indentados (`  alias hotmart=...`) e um `^alias` puro não os pegaria.
+
+**A verificação de verdade** não é contar linhas do arquivo — é abrir um zsh e ver o que ele carregou:
+
+```bash
+comm -12 \
+  <(grep -Eo '^[[:space:]]*alias [A-Za-z0-9_.:-]+' "$af" | awk '{print $NF}' | sort -u) \
+  <(zsh -ic 'alias' 2>/dev/null | sed 's/=.*//' | sort -u) | grep -c .
+```
+
+Interseção, não contagem total: o zsh já traz 2 aliases próprios (`run-help`, `which-command`), então um `alias | wc -l` daria 60 onde o arquivo tem 58 e pareceria um bug. Comparando nome a nome, `58 de 58` é uma afirmação verificável.
+
+**Variáveis de ambiente** vêm do `exports.zsh`, com `$HOME` substituído textualmente (não via `eval`) e um teste de existência do diretório. `ANDROID_HOME` aparece com `⚠️` até você abrir o Android Studio e instalar o SDK — o que é o estado correto, não um erro.
+
+O `PATH` é reportado como contagem de entradas em vez de valor: ele é montado em 3 `export` separados no `exports.zsh` e imprimir o valor final não diria nada útil.
+
 ### Resumo final
 
 ```
   RESUMO
 
-    ✅ instalados:   14
+    ✅ aplicados:    14
     ⏭  já presentes: 3
     ⚠️  avisos:      1
     ❌ falhas:      2

@@ -76,25 +76,65 @@ O motivo: em Apple Silicon o Homebrew mora em `/opt/homebrew` (teu), mas `/usr/l
 
 Se você recusar, o script **não aborta**: segue instalando o que não precisa de root, e o que precisar entra no resumo como falha. Selecionando só apps que não usam `cask`, ele nem pergunta.
 
-### Se algum app falhar
+### O relatório final
 
-O script **não para**. Ele instala e configura tudo que der certo, e mostra as falhas juntas no final:
+Termina mostrando tudo que foi aplicado — não só os apps, mas os aliases, as variáveis de ambiente e o toolchain:
 
 ```
   RESUMO
 
-    ✅ instalados:   14
+    ✅ aplicados:    5
     ⏭  já presentes: 3
+    ⚠️  avisos:      1
     ❌ falhas:      1
 
+  Aplicado nesta rodada
+    ✅ arc
+    ✅ google-chrome
+    ✅ docker-desktop
+    ✅ ~/.zshrc (symlink)
+    ✅ Java 17 (Temurin)
+
+  CONFIGURAÇÃO
+
+    Shell
+      ✅ ~/.zshrc → dotfiles/zsh/.zshrc
+      ✅ 58 aliases em 15 categorias
+      ✅ verificado: um shell novo carrega os 58
+
+    Aliases por categoria
+      Editar configs rapidamente                  4
+      Git                                         10
+      Navegação                                   5
+      ...
+      EAS Build                                   9
+
+    Ambiente
+      ANDROID_HOME  ~/Library/Android/sdk                     ✅
+      JAVA_HOME     ~/.sdkman/candidates/java/current         ✅
+      PATH          +3 entradas (bin local, VS Code CLI, Android SDK)
+
+    Toolchain
+      brew      6.0.18
+      node      v26.0.0
+      java      17.0.10
+      watchman  2026.05.18.00
+      eas       19.0.8
+
   Falhas — o resto foi configurado normalmente
-    ❌ docker
-       brew install --cask falhou: Error: Cask 'docker' is unavailable.
+    ❌ postman
+       brew install --cask falhou: Error: Download failed
 
     Log completo: ~/.dotfiles-install-20260819_095441.log
+
+  Próximos passos
+    → source ~/.zshrc — recarregar o shell
+    → Android Studio → SDK Manager → instalar Android SDK API 34
 ```
 
-Pra tentar de novo, rode o script e marque só os itens que falharam — ele é idempotente e pula o que já está instalado.
+O bloco **CONFIGURAÇÃO** confere o estado real depois da instalação, não o que o script tentou fazer: o `✅ verificado` abre um zsh de verdade e checa quais dos seus aliases ele realmente carregou. As variáveis de ambiente que apontam pra pastas ainda inexistentes (Android SDK antes de você abrir o Android Studio) aparecem com `⚠️`.
+
+Uma falha **não para** o resto. Pra tentar de novo, rode o script e marque só os itens que falharam — ele é idempotente e pula o que já está instalado.
 
 > Adicionou um app novo ao `Brewfile`? Ele aparece no menu sozinho — o catálogo é lido do próprio Brewfile.
 

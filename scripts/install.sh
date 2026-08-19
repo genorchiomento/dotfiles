@@ -373,9 +373,12 @@ list_cats() {
 
 # ── Execução com coleta de erros ───────────────────────────
 OK_COUNT=0; SKIP_COUNT=0
+DONE_NAMES=()               # o que foi de fato aplicado nesta rodada
 FAIL_NAME=(); FAIL_MSG=()
 WARN_MSG=(); NOTE_MSG=()
 LAST_OUT=""
+
+mark_ok() { ok "$1"; OK_COUNT=$(( OK_COUNT + 1 )); DONE_NAMES+=("$1"); }
 
 capture() { # capture <cmd...> — nunca aborta, guarda saída em LAST_OUT + log
   if [ "$DRY_RUN" -eq 1 ]; then echo -e "  ${DIM}[dry-run] $*${NC}"; LAST_OUT=""; return 0; fi
@@ -396,7 +399,7 @@ last_error_line() {
 install_brew() { # install_brew <id> <desc>
   if brew list --formula "$1" &>/dev/null; then skip "$1 (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
   echo -e "  ${CYAN}⏳ $1${NC}"
-  if capture brew install "$1"; then ok "$1"; OK_COUNT=$(( OK_COUNT + 1 ))
+  if capture brew install "$1"; then mark_ok "$1"
   else record_fail "$1" "brew install falhou: $(last_error_line)"; fi
 }
 
@@ -404,7 +407,7 @@ install_cask() { # install_cask <id> <desc>
   if brew list --cask "$1" &>/dev/null; then skip "$1 (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
   echo -e "  ${CYAN}⏳ $1${NC}"
   if capture brew install --cask --adopt "$1" || capture brew install --cask "$1"; then
-    ok "$1"; OK_COUNT=$(( OK_COUNT + 1 ))
+    mark_ok "$1"
   else
     record_fail "$1" "brew install --cask falhou: $(last_error_line)"
   fi
@@ -414,7 +417,7 @@ step_sdkman() {
   if [ -d "$HOME/.sdkman" ]; then skip "SDKMAN (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
   export SDKMAN_DIR="$HOME/.sdkman"
   if capture bash -c 'curl -fsSL "https://get.sdkman.io?rcupdate=false" | bash'; then
-    ok "SDKMAN instalado"; OK_COUNT=$(( OK_COUNT + 1 ))
+    mark_ok "SDKMAN"
   else
     record_fail "sdkman" "instalação falhou: $(last_error_line)"
   fi
@@ -433,7 +436,7 @@ step_java17() {
   else
     echo -e "  ${CYAN}⏳ Java 17 Temurin${NC}"
     if capture bash -c ". \"$init\" && sdk install java 17.0.11-tem"; then
-      ok "Java 17 instalado"; OK_COUNT=$(( OK_COUNT + 1 ))
+      mark_ok "Java 17 (Temurin)"
     else
       record_fail "java17" "sdk install falhou: $(last_error_line)"; return
     fi
@@ -450,7 +453,7 @@ step_eascli() {
   if command -v eas >/dev/null 2>&1; then skip "EAS CLI (já instalado)"; SKIP_COUNT=$(( SKIP_COUNT + 1 )); return; fi
   echo -e "  ${CYAN}⏳ eas-cli${NC}"
   if capture npm install -g eas-cli; then
-    ok "EAS CLI instalado"; OK_COUNT=$(( OK_COUNT + 1 ))
+    mark_ok "EAS CLI"
     NOTE_MSG+=("eas login — autenticar no Expo")
   else
     record_fail "eas-cli" "npm install -g falhou: $(last_error_line)"
@@ -469,7 +472,7 @@ step_zshrc() {
     else record_fail "zshrc" "não consegui fazer backup de $dst"; return; fi
   fi
   if capture ln -sfn "$src" "$dst"; then
-    ok "~/.zshrc → dotfiles/zsh/.zshrc"; OK_COUNT=$(( OK_COUNT + 1 ))
+    mark_ok "~/.zshrc (symlink)"
     NOTE_MSG+=("source ~/.zshrc — recarregar o shell")
   else
     record_fail "zshrc" "symlink falhou: $(last_error_line)"
@@ -485,8 +488,7 @@ step_xcode() {
     || WARN_MSG+=("xcode-select falhou (rode manualmente com sudo)")
   capture sudo xcodebuild -license accept \
     || WARN_MSG+=("licença do Xcode não aceita (rode: sudo xcodebuild -license accept)")
-  ok "Xcode: $(xcodebuild -version 2>/dev/null | head -1)"
-  OK_COUNT=$(( OK_COUNT + 1 ))
+  mark_ok "Xcode: $(xcodebuild -version 2>/dev/null | head -1)"
 }
 
 # ── sudo: pedir uma vez, com contexto ──────────────────────
@@ -627,6 +629,116 @@ run_install() {
   done
 }
 
+# ── Relatório de configuração ──────────────────────────────
+# O resumo de apps não conta a história toda: aliases, variáveis de
+# ambiente e toolchain também foram aplicados. Aqui a gente confere o
+# estado REAL depois da instalação, não o que o script tentou fazer.
+
+alias_counts() { # ecoa "categoria<TAB>quantidade" por seção do aliases.zsh
+  awk '
+    /^# === / { name = $0; sub(/^# === /, "", name); sub(/ ===$/, "", name)
+                cats[++k] = name; next }
+    /^[[:space:]]*alias / { if (k > 0) cnt[k]++ }
+    END { for (i = 1; i <= k; i++) printf "%s\t%d\n", cats[i], cnt[i] + 0 }
+  ' "$1"
+}
+
+config_report() {
+  local src="$DOTFILES/zsh/.zshrc" dst="$HOME/.zshrc"
+  local af="$DOTFILES/zsh/aliases.zsh" ef="$DOTFILES/zsh/exports.zsh"
+  local linked=0
+
+  echo -e "\n  ${BOLD}CONFIGURAÇÃO${NC}\n"
+
+  # ── Shell ──
+  echo -e "    ${BOLD}Shell${NC}"
+  if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+    linked=1
+    echo -e "      ${GREEN}✅${NC} ~/.zshrc → dotfiles/zsh/.zshrc"
+  elif [ -e "$dst" ]; then
+    echo -e "      ${YELLOW}⚠️${NC}  ~/.zshrc existe mas não aponta pros dotfiles"
+  else
+    echo -e "      ${DIM}—${NC}  ~/.zshrc não configurado (categoria Shell não foi marcada)"
+  fi
+
+  local n_alias=0 n_cat=0
+  if [ -f "$af" ]; then
+    n_alias="$(grep -cE '^[[:space:]]*alias ' "$af" | tr -d ' ')"
+    n_cat="$(grep -cE '^# === ' "$af" | tr -d ' ')"
+    if [ "$linked" -eq 1 ]; then
+      echo -e "      ${GREEN}✅${NC} $n_alias aliases em $n_cat categorias"
+    else
+      echo -e "      ${DIM}—${NC}  $n_alias aliases prontos, mas o symlink não está no lugar"
+    fi
+  fi
+
+  # Prova real: abre um zsh de verdade e confere quais dos NOSSOS aliases
+  # ele carregou. Contar o total não serve — o zsh já traz 2 aliases
+  # próprios (run-help, which-command) e o número não bateria.
+  if [ "$linked" -eq 1 ] && [ -f "$af" ] && command -v zsh >/dev/null 2>&1; then
+    local n_live
+    n_live="$(comm -12 \
+      <(grep -Eo '^[[:space:]]*alias [A-Za-z0-9_.:-]+' "$af" | awk '{print $NF}' | sort -u) \
+      <(zsh -ic 'alias' 2>/dev/null | sed 's/=.*//' | sort -u) | grep -c .)"
+    n_live="$(printf '%s' "$n_live" | tr -d ' ')"
+    if [ "$n_live" -eq "$n_alias" ] 2>/dev/null; then
+      echo -e "      ${GREEN}✅${NC} verificado: um shell novo carrega os $n_live"
+    elif [ "$n_live" -gt 0 ] 2>/dev/null; then
+      echo -e "      ${YELLOW}⚠️${NC}  só $n_live de $n_alias respondem num shell novo"
+    fi
+  fi
+
+  # ── Aliases por categoria ──
+  if [ -f "$af" ] && [ "$n_alias" -gt 0 ]; then
+    echo -e "\n    ${BOLD}Aliases por categoria${NC}"
+    local nm ct
+    while IFS="$(printf '\t')" read -r nm ct; do
+      [ -z "$nm" ] && continue
+      [ ${#nm} -gt 42 ] && nm="${nm:0:41}…"
+      echo -e "      ${DIM}$(pad "$nm" 44)${NC}$ct"
+    done <<EOF
+$(alias_counts "$af")
+EOF
+  fi
+
+  # ── Variáveis de ambiente ──
+  if [ -f "$ef" ]; then
+    echo -e "\n    ${BOLD}Ambiente${NC}"
+    local line var val shown npath=0
+    while IFS= read -r line; do
+      var="${line%%=*}"; val="${line#*=}"
+      val="${val%\"}"; val="${val#\"}"
+      if [ "$var" = "PATH" ]; then npath=$(( npath + 1 )); continue; fi
+      val="${val//\$HOME/$HOME}"
+      shown="${val/#$HOME/~}"
+      [ ${#shown} -gt 40 ] && shown="…${shown:$(( ${#shown} - 39 ))}"
+      if [ -d "$val" ]; then
+        echo -e "      $(pad "$var" 14)${DIM}$(pad "$shown" 42)${NC}${GREEN}✅${NC}"
+      else
+        echo -e "      $(pad "$var" 14)${DIM}$(pad "$shown" 42)${NC}${YELLOW}⚠️  ainda não existe${NC}"
+      fi
+    done <<EOF
+$(grep -E '^export [A-Za-z_][A-Za-z0-9_]*=' "$ef" | sed 's/^export //')
+EOF
+    [ "$npath" -gt 0 ] && echo -e "      $(pad "PATH" 14)${DIM}+$npath entradas (bin local, VS Code CLI, Android SDK)${NC}"
+  fi
+
+  # ── Toolchain ──
+  local tools="" v
+  add_tool() { tools="$tools      $(pad "$1" 10)$2\n"; }   # prefixo por linha
+  command -v brew     >/dev/null 2>&1 && add_tool brew     "$(brew --version 2>/dev/null | head -1 | awk '{print $2}')"
+  command -v node     >/dev/null 2>&1 && add_tool node     "$(node --version 2>/dev/null)"
+  command -v java     >/dev/null 2>&1 && {
+    v="$(java -version 2>&1 | head -1 | sed 's/.*version "\([^"]*\)".*/\1/')"
+    add_tool java "$v"; }
+  command -v watchman >/dev/null 2>&1 && add_tool watchman "$(watchman --version 2>/dev/null)"
+  command -v eas      >/dev/null 2>&1 && add_tool eas      "$(eas --version 2>/dev/null | head -1 | awk '{print $1}' | cut -d/ -f2)"
+  if [ -n "$tools" ]; then
+    echo -e "\n    ${BOLD}Toolchain${NC}"
+    printf "%b" "$tools"
+  fi
+}
+
 final_report() {
   echo ""
   divider
@@ -637,10 +749,18 @@ final_report() {
   fi
 
   echo -e "  ${BOLD}RESUMO${NC}\n"
-  echo -e "    ${GREEN}✅ instalados:${NC}   $OK_COUNT"
+  echo -e "    ${GREEN}✅ aplicados:${NC}    $OK_COUNT"
   echo -e "    ${DIM}⏭  já presentes:${NC} $SKIP_COUNT"
   echo -e "    ${YELLOW}⚠️  avisos:${NC}      ${#WARN_MSG[@]}"
   echo -e "    ${RED}❌ falhas:${NC}      ${#FAIL_NAME[@]}"
+
+  if [ ${#DONE_NAMES[@]} -gt 0 ]; then
+    echo -e "\n  ${BOLD}Aplicado nesta rodada${NC}"
+    local d
+    for d in "${DONE_NAMES[@]}"; do echo -e "    ${GREEN}✅${NC} $d"; done
+  fi
+
+  config_report
 
   if [ ${#WARN_MSG[@]} -gt 0 ]; then
     echo -e "\n  ${BOLD}${YELLOW}Avisos${NC}"
